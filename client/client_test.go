@@ -240,13 +240,9 @@ func TestProcessBroadcast(t *testing.T) {
 	require.NoError(t, err)
 	broadcastMsg.Signature = sig
 
-	// Serialize the broadcast
-	broadcastBytes, err := zipnet.SerializeMessage(broadcastMsg)
-	require.NoError(t, err)
-
 	// Process the broadcast
 	ctx := context.Background()
-	result, err := c.ProcessBroadcast(ctx, 1, broadcastBytes)
+	result, err := c.ProcessBroadcast(ctx, 1, *broadcastMsg)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
@@ -308,12 +304,8 @@ func TestMultiRoundExchange(t *testing.T) {
 	require.NoError(t, err)
 	round2Broadcast.Signature = broadcastSig
 
-	// Serialize for transmission
-	broadcastBytes, err := zipnet.SerializeMessage(round2Broadcast)
-	require.NoError(t, err)
-
 	// Process the broadcast
-	msgVec, err := c.ProcessBroadcast(ctx, 2, broadcastBytes)
+	msgVec, err := c.ProcessBroadcast(ctx, 2, *round2Broadcast)
 	require.NoError(t, err)
 	require.NotNil(t, msgVec)
 

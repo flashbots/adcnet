@@ -7,51 +7,7 @@ import (
 	"github.com/ruteri/go-zipnet/aggregator"
 	"github.com/ruteri/go-zipnet/client"
 	"github.com/ruteri/go-zipnet/crypto"
-	"github.com/ruteri/go-zipnet/zipnet"
 )
-
-type ServerHandler struct {
-	ZIPNetServer zipnet.Server
-}
-
-func NewServerHandler(ZIPNetServer zipnet.Server) *ServerHandler {
-	return &ServerHandler{ZIPNetServer: ZIPNetServer}
-}
-
-func (h *ServerHandler) RegisterRoutes(r chi.Router) {
-	// Note: leader is set statically through config, should be done by consensus.
-	r.Post("/server/register-client", h.registerClient) // TODO: should check client's attestation
-	r.Post("/server/register-aggregator", h.registerAggregator)
-	r.Post("/server/register-server", h.registerServer)
-	r.Get("/server/round-output", h.roundOutput)
-	r.Get("/server/schedule", h.schedule)
-	r.Post("/server/aggregate", h.aggregate) // Note: servers unblind one by one until the leader
-}
-
-func (h *ServerHandler) RunInBackground() {
-	// 0. Register with servers
-	// In the background:
-	// 1. Unblind aggregates
-	// 2. Publish schedules
-}
-
-func (h *ServerHandler) registerClient(w http.ResponseWriter, r *http.Request) {
-}
-
-func (h *ServerHandler) registerAggregator(w http.ResponseWriter, r *http.Request) {
-}
-
-func (h *ServerHandler) registerServer(w http.ResponseWriter, r *http.Request) {
-}
-
-func (h *ServerHandler) roundOutput(w http.ResponseWriter, r *http.Request) {
-}
-
-func (h *ServerHandler) schedule(w http.ResponseWriter, r *http.Request) {
-}
-
-func (h *ServerHandler) aggregate(w http.ResponseWriter, r *http.Request) {
-}
 
 type AggregatorHandler struct {
 	Aggregator *aggregator.AggregatorImpl

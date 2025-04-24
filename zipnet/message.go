@@ -2,6 +2,7 @@ package zipnet
 
 import (
 	"encoding/json"
+	"io"
 
 	"github.com/ruteri/go-zipnet/crypto"
 )
@@ -86,6 +87,29 @@ type UnblindedShareMessage struct {
 	ServerPublicKey crypto.PublicKey `json:"server_public_key"`
 }
 
+func (m *UnblindedShareMessage) Sign(c CryptoProvider, pk crypto.PrivateKey) (*UnblindedShareMessage, error) {
+	mCopy := *m
+	mCopy.Signature = nil
+	data, err := SerializeMessage(&mCopy)
+	if err != nil {
+		return nil, err
+	}
+
+	mCopy.Signature, err = c.Sign(pk, data)
+	return &mCopy, err
+}
+
+func (m *UnblindedShareMessage) Verify(c CryptoProvider) error {
+	mCopy := *m
+	mCopy.Signature = nil
+	data, err := SerializeMessage(&mCopy)
+	if err != nil {
+		return err
+	}
+
+	return c.Verify(m.ServerPublicKey, data, m.Signature)
+}
+
 // RoundOutput represents the final output of a round after combining all
 // server shares and unblinding the message.
 //
@@ -142,7 +166,7 @@ type ServerRegistrationBlob struct {
 	IsLeader bool `json:"is_leader"`
 }
 
-// DeserializeMessage converts bytes to a message object
+// UnmarshalMessage converts bytes to a message object
 // This function uses JSON deserialization, which is not optimized for performance
 // but provides good compatibility and debugging capabilities.
 //
@@ -150,9 +174,15 @@ type ServerRegistrationBlob struct {
 // - data: The serialized message bytes
 //
 // Returns the deserialized message and any error that occurred.
-func DeserializeMessage[T any](data []byte) (*T, error) {
+func UnmarshalMessage[T any](data []byte) (*T, error) {
 	var msg T
 	err := json.Unmarshal(data, &msg)
+	return &msg, err
+}
+
+func DecodeMessage[T any](reader io.Reader) (*T, error) {
+	var msg T
+	err := json.NewDecoder(reader).Decode(&msg)
 	return &msg, err
 }
 

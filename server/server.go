@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"sync"
@@ -26,11 +25,9 @@ import (
 //  4. Ratchets its shared secrets forward for security
 type ServerImpl struct {
 	// Server identity and configuration
-	serverID       string                  // Unique identifier for this server
-	config         *zipnet.ZIPNetConfig    // Protocol configuration
-	cryptoProvider zipnet.CryptoProvider   // For cryptographic operations
-	network        zipnet.NetworkTransport // For network communication
-	isLeader       bool                    // Whether this server is the leader
+	config         *zipnet.ZIPNetConfig  // Protocol configuration
+	cryptoProvider zipnet.CryptoProvider // For cryptographic operations
+	isLeader       bool                  // Whether this server is the leader
 
 	// Cryptographic keys
 	signingKey   crypto.PrivateKey // For signing messages
@@ -48,10 +45,7 @@ type ServerImpl struct {
 	regServers     map[string]bool             // Registered server public keys
 
 	// Round management
-	currentRound uint64                          // Current protocol round
-	roundShares  []*zipnet.UnblindedShareMessage // Shares collected for current round
-	roundOutputs map[uint64]*zipnet.RoundOutput  // Previous round outputs
-	schedules    map[uint64][]byte               // Published schedules by round
+	schedules map[uint64][]byte // Published schedules by round
 
 	// Anytrust group properties
 	anytrustGroupSize int    // Number of servers in the group
@@ -63,21 +57,17 @@ type ServerImpl struct {
 // Parameters:
 // - config: Protocol configuration parameters
 // - cryptoProvider: For cryptographic operations
-// - network: For network communication
 // - isLeader: Whether this server is the leader of its anytrust group
 //
 // Returns an initialized server or an error if creation fails.
 func NewServer(config *zipnet.ZIPNetConfig, cryptoProvider zipnet.CryptoProvider,
-	network zipnet.NetworkTransport, isLeader bool) (*ServerImpl, error) {
+	isLeader bool) (*ServerImpl, error) {
 
 	if config == nil {
 		return nil, errors.New("config cannot be nil")
 	}
 	if cryptoProvider == nil {
 		return nil, errors.New("crypto provider cannot be nil")
-	}
-	if network == nil {
-		return nil, errors.New("network transport cannot be nil")
 	}
 
 	// Generate server keypairs
@@ -94,13 +84,10 @@ func NewServer(config *zipnet.ZIPNetConfig, cryptoProvider zipnet.CryptoProvider
 	// Create server ID by hashing the public key
 	h := sha256.New()
 	h.Write(publicKey.Bytes())
-	serverID := hex.EncodeToString(h.Sum(nil))
 
 	server := &ServerImpl{
-		serverID:          serverID,
 		config:            config,
 		cryptoProvider:    cryptoProvider,
-		network:           network,
 		isLeader:          isLeader,
 		signingKey:        signingKey,
 		kemKey:            kemKey,
@@ -110,9 +97,6 @@ func NewServer(config *zipnet.ZIPNetConfig, cryptoProvider zipnet.CryptoProvider
 		regUsers:          make(map[string]bool),
 		regAggregators:    make(map[string]bool),
 		regServers:        make(map[string]bool),
-		currentRound:      0,
-		roundShares:       make([]*zipnet.UnblindedShareMessage, 0),
-		roundOutputs:      make(map[uint64]*zipnet.RoundOutput),
 		schedules:         make(map[uint64][]byte),
 		anytrustGroupSize: 1, // Start with just this server
 		minClients:        config.MinClients,
@@ -125,6 +109,14 @@ func NewServer(config *zipnet.ZIPNetConfig, cryptoProvider zipnet.CryptoProvider
 // and cryptographic operations.
 func (s *ServerImpl) GetPublicKey() crypto.PublicKey {
 	return s.publicKey
+}
+
+func (s *ServerImpl) GetRegistrationBlob() *zipnet.ServerRegistrationBlob {
+	return &zipnet.ServerRegistrationBlob{
+		PublicKey:    s.publicKey,
+		KemPublicKey: s.kemPublicKey,
+		IsLeader:     s.isLeader,
+	}
 }
 
 // RegisterClient establishes a shared secret with a client after verifying
@@ -265,23 +257,16 @@ func (s *ServerImpl) UnblindAggregate(ctx context.Context,
 		MsgVec:       aMsgVec,
 	}
 
-	unblindedShare := &zipnet.UnblindedShareMessage{
+	unsignedUnblindedShare := &zipnet.UnblindedShareMessage{
 		EncryptedMsg:    aggregate,
 		KeyShare:        keyShare,
 		ServerPublicKey: s.publicKey,
 	}
 
-	// Sign the unblinded share
-	shareData, err := zipnet.SerializeMessage(keyShare)
-	if err != nil {
-		return nil, fmt.Errorf("failed to serialize key share: %w", err)
-	}
-
-	signature, err := s.cryptoProvider.Sign(s.signingKey, shareData)
+	unblindedShare, err := unsignedUnblindedShare.Sign(s.cryptoProvider, s.signingKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign unblinded share: %w", err)
 	}
-	unblindedShare.Signature = signature
 
 	// Update the shared secrets with ratcheted keys
 	// Need to release read lock and acquire write lock
@@ -382,65 +367,10 @@ func (s *ServerImpl) DeriveRoundOutput(ctx context.Context,
 
 	// Store the round output and next round's schedule
 	s.mu.Lock()
-	s.roundOutputs[round] = roundOutput
 	s.schedules[round+1] = finalSchedVec
 	s.mu.Unlock()
 
 	return roundOutput, nil
-}
-
-// ProcessAggregate handles an aggregated message from an aggregator.
-func (s *ServerImpl) ProcessAggregate(ctx context.Context,
-	message *zipnet.AggregatorMessage) (*zipnet.ServerMessage, error) {
-
-	// Verify the message (in production code)
-	// TODO: Implement proper message verification
-
-	// Unblind the aggregate
-	unblindedShare, err := s.UnblindAggregate(ctx, message)
-	if err != nil {
-		return nil, fmt.Errorf("failed to unblind aggregate: %w", err)
-	}
-
-	if s.isLeader {
-		// Leader collects shares (including its own)
-		s.mu.Lock()
-
-		// Store this share
-		if len(s.roundShares) == 0 || s.roundShares[0].EncryptedMsg.Round != message.Round {
-			// New round, reset shares collection
-			s.roundShares = make([]*zipnet.UnblindedShareMessage, 0, s.anytrustGroupSize)
-		}
-		s.roundShares = append(s.roundShares, unblindedShare)
-
-		// If we have all shares, derive the round output
-		if len(s.roundShares) == s.anytrustGroupSize {
-			roundOutput, err := s.DeriveRoundOutput(ctx, s.roundShares)
-			if err != nil {
-				s.mu.Unlock()
-				return nil, fmt.Errorf("failed to derive round output: %w", err)
-			}
-
-			// Reset for next round
-			s.roundShares = make([]*zipnet.UnblindedShareMessage, 0, s.anytrustGroupSize)
-			s.mu.Unlock()
-
-			// Create server message from round output
-			return &zipnet.ServerMessage{
-				Round:        roundOutput.Round,
-				NextSchedVec: roundOutput.Message.NextSchedVec,
-				MsgVec:       roundOutput.Message.MsgVec,
-				Signature:    roundOutput.ServerSignatures[0].Signature,
-			}, nil
-		}
-
-		s.mu.Unlock()
-		return nil, nil // Still waiting for more shares
-	} else {
-		// Follower sends its share to the leader
-		// TODO: Implement leader communication using network transport
-		return nil, nil
-	}
 }
 
 // PublishSchedule creates and signs a schedule for the next round.
@@ -453,6 +383,7 @@ func (s *ServerImpl) PublishSchedule(ctx context.Context,
 
 	// Format the schedule data for signing
 	buf := new(bytes.Buffer)
+	// TODO: should include round
 	buf.Write(schedVec)
 	scheduleData := buf.Bytes()
 
@@ -468,4 +399,40 @@ func (s *ServerImpl) PublishSchedule(ctx context.Context,
 	s.mu.Unlock()
 
 	return scheduleData, signature, nil
+}
+
+// GetSchedule retrieves a published schedule by round number
+// This is needed for the HTTP handler to access schedules
+func (s *ServerImpl) GetSchedule(round uint64) ([]byte, crypto.Signature, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	schedVec, exists := s.schedules[round]
+	if !exists {
+		return nil, nil, fmt.Errorf("no schedule available for round %d", round)
+	}
+
+	// If we have the schedule, we need to return it with a signature
+	// Re-sign it to get a fresh signature
+	signature, err := s.cryptoProvider.Sign(s.signingKey, schedVec)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to sign schedule: %w", err)
+	}
+
+	return schedVec, signature, nil
+}
+
+func (s *ServerImpl) SetSchedule(ctx context.Context,
+	round uint64, schedVec []byte, signature crypto.Signature) error {
+	// TODO: verify signature
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.schedules[round] = schedVec
+	return nil
+}
+
+// IsLeader returns true if this server is the leader of its anytrust group
+func (s *ServerImpl) IsLeader() bool {
+	return s.isLeader
 }

@@ -131,8 +131,8 @@ func (m *mockCryptoProvider) Sign(privateKey crypto.PrivateKey, data []byte) (cr
 	return crypto.NewSignature([]byte("mock-signature")), nil
 }
 
-func (m *mockCryptoProvider) Verify(publicKey crypto.PublicKey, data []byte, signature crypto.Signature) (bool, error) {
-	return true, nil
+func (m *mockCryptoProvider) Verify(publicKey crypto.PublicKey, data []byte, signature crypto.Signature) error {
+	return nil
 }
 
 func (m *mockCryptoProvider) Hash(data []byte) (crypto.Hash, error) {
@@ -154,7 +154,11 @@ func (m *mockNetworkTransport) SendToAggregator(ctx context.Context, aggregatorI
 	return nil
 }
 
-func (m *mockNetworkTransport) SendToServer(ctx context.Context, serverID string, message *AggregatorMessage) error {
+func (m *mockNetworkTransport) SendAggregateToServer(ctx context.Context, serverID string, message *AggregatorMessage) error {
+	return nil
+}
+
+func (m *mockNetworkTransport) SendShareToServer(ctx context.Context, serverID string, message *UnblindedShareMessage) error {
 	return nil
 }
 

@@ -338,9 +338,12 @@ func (p *StandardCryptoProvider) Sign(privateKey PrivateKey, data []byte) (Signa
 // - data: The data that was signed
 // - signature: The signature to verify
 //
-// Returns true if the signature is valid, false otherwise, and any error.
-func (p *StandardCryptoProvider) Verify(publicKey PublicKey, data []byte, signature Signature) (bool, error) {
-	return signature.Verify(publicKey, data), nil
+// Returns error if signature is invalid.
+func (p *StandardCryptoProvider) Verify(publicKey PublicKey, data []byte, signature Signature) error {
+	if !signature.Verify(publicKey, data) {
+		return errors.New("invalid signature")
+	}
+	return nil
 }
 
 // Hash computes a SHA-256 hash of the provided data.

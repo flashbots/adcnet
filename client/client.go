@@ -349,17 +349,7 @@ func (c *ClientImpl) ReserveSlot(ctx context.Context, round uint64, publishedSch
 // - broadcast: The broadcast message from the server
 //
 // Returns the processed message data or an error if processing fails.
-func (c *ClientImpl) ProcessBroadcast(ctx context.Context, round uint64, broadcast []byte) ([]byte, error) {
-	if broadcast == nil {
-		return nil, errors.New("broadcast message cannot be nil")
-	}
-
-	// Deserialize the broadcast
-	broadcastMsg, err := zipnet.DeserializeMessage[zipnet.ServerMessage](broadcast)
-	if err != nil {
-		return nil, fmt.Errorf("failed to deserialize broadcast: %w", err)
-	}
-
+func (c *ClientImpl) ProcessBroadcast(ctx context.Context, round uint64, broadcastMsg zipnet.ServerMessage) ([]byte, error) {
 	// Verify the signature
 	leaderServerID := c.config.AnytrustServers[0]
 	leaderPK, exists := c.serverPublicKeys[leaderServerID]
@@ -368,15 +358,14 @@ func (c *ClientImpl) ProcessBroadcast(ctx context.Context, round uint64, broadca
 	}
 
 	// Create a copy of the message without the signature for verification
-	broadcastCopy := *broadcastMsg
+	broadcastCopy := broadcastMsg
 	broadcastCopy.Signature = nil
 	serializedMsg, err := zipnet.SerializeMessage(&broadcastCopy)
 	if err != nil {
 		return nil, fmt.Errorf("failed to serialize broadcast for verification: %w", err)
 	}
 
-	valid, err := c.crypto.Verify(leaderPK, serializedMsg, broadcastMsg.Signature)
-	if err != nil || !valid {
+	if err = c.crypto.Verify(leaderPK, serializedMsg, broadcastMsg.Signature); err != nil {
 		return nil, errors.New("invalid broadcast signature")
 	}
 

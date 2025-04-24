@@ -145,12 +145,8 @@ func (a *AggregatorImpl) ReceiveClientMessage(ctx context.Context, message *zipn
 		return fmt.Errorf("failed to serialize message for verification: %w", err)
 	}
 
-	valid, err := a.cryptoProvider.Verify(clientPK, data, message.Signature)
-	if err != nil {
+	if err = a.cryptoProvider.Verify(clientPK, data, message.Signature); err != nil {
 		return fmt.Errorf("signature verification error: %w", err)
-	}
-	if !valid {
-		return errors.New("invalid signature")
 	}
 
 	// Check if we've already received a message from this client
@@ -232,12 +228,8 @@ func (a *AggregatorImpl) ReceiveAggregatorMessage(ctx context.Context, message *
 		return errors.New("cannot identify sender of empty aggregator message")
 	}
 
-	valid, err := a.cryptoProvider.Verify(senderPK, data, message.Signature)
-	if err != nil {
+	if err = a.cryptoProvider.Verify(senderPK, data, message.Signature); err != nil {
 		return fmt.Errorf("signature verification error: %w", err)
-	}
-	if !valid {
-		return errors.New("invalid signature")
 	}
 
 	// Check if we've already received a message from this aggregator
@@ -382,7 +374,7 @@ func (a *AggregatorImpl) ForwardAggregate(ctx context.Context) error {
 	// If this is the root aggregator, send to all anytrust servers
 	if a.level == uint32(len(a.config.Aggregators)-1) {
 		for _, serverAddr := range a.config.AnytrustServers {
-			err := a.networkTransport.SendToServer(ctx, serverAddr, aggMsg)
+			err := a.networkTransport.SendAggregateToServer(ctx, serverAddr, aggMsg)
 			if err != nil {
 				return fmt.Errorf("failed to send to server %s: %w", serverAddr, err)
 			}

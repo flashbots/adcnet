@@ -168,7 +168,7 @@ type Client interface {
 	// - broadcast: The broadcast message from the server
 	//
 	// Returns the processed message data or an error if processing fails.
-	ProcessBroadcast(ctx context.Context, round uint64, broadcast []byte) ([]byte, error)
+	ProcessBroadcast(ctx context.Context, round uint64, broadcast ServerMessage) ([]byte, error)
 
 	// GetTimesParticipated returns the number of times this client has
 	// participated in the current window. This is used for rate limiting.
@@ -330,17 +330,6 @@ type Server interface {
 	// Returns the final round output or an error if derivation fails.
 	DeriveRoundOutput(ctx context.Context, shares []*UnblindedShareMessage) (*RoundOutput, error)
 
-	// ProcessAggregate handles an aggregated message from an aggregator.
-	// If this server is the leader, it collects shares and produces the final broadcast.
-	// If this server is a follower, it sends its share to the leader.
-	//
-	// Parameters:
-	// - ctx: Context for the operation
-	// - message: The aggregated message from an aggregator
-	//
-	// Returns a server message or an error if processing fails.
-	ProcessAggregate(ctx context.Context, message *AggregatorMessage) (*ServerMessage, error)
-
 	// PublishSchedule creates and signs a schedule for the next round.
 	// This is typically only performed by the leader server.
 	//
@@ -491,7 +480,7 @@ type CryptoProvider interface {
 	//
 	// Returns true if the signature is valid, false otherwise, and an error if verification fails.
 	Verify(publicKey crypto.PublicKey, data []byte,
-		signature crypto.Signature) (bool, error)
+		signature crypto.Signature) error
 
 	// Hash computes a cryptographic hash of data.
 	//
@@ -542,10 +531,13 @@ type NetworkTransport interface {
 	// Parameters:
 	// - ctx: Context for the operation
 	// - serverID: Identifier for the target server
-	// - message: The message to send
+	// - message: The message to send (AggregatorMessage or UnblindedShareMessage)
 	//
 	// Returns an error if sending fails.
-	SendToServer(ctx context.Context, serverID string,
+	SendShareToServer(ctx context.Context, serverID string,
+		message *UnblindedShareMessage) error
+
+	SendAggregateToServer(ctx context.Context, serverID string,
 		message *AggregatorMessage) error
 
 	// BroadcastToClients broadcasts a message to all clients.

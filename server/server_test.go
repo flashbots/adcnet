@@ -20,9 +20,8 @@ func setupTestServer(t *testing.T, isLeader bool) *ServerImpl {
 		MinClients:      2,
 	}
 	cryptoProvider := zipnet.NewMockCryptoProvider()
-	network := zipnet.NewMockNetworkTransport()
 
-	server, err := NewServer(config, cryptoProvider, network, isLeader)
+	server, err := NewServer(config, cryptoProvider, isLeader)
 	require.NoError(t, err)
 	require.NotNil(t, server)
 
