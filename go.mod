@@ -1,4 +1,4 @@
-module github.com/flashbots/go-template
+module github.com/ruteri/go-zipnet
 
 go 1.21
 
