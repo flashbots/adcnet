@@ -2,6 +2,10 @@ package zipnet
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"errors"
+	"fmt"
 
 	"github.com/ruteri/go-zipnet/crypto"
 )
@@ -23,7 +27,7 @@ func NewMockClient(publicKey crypto.PublicKey) *MockClient {
 				Round:        round,
 				NextSchedVec: make([]byte, 400),   // Default size
 				MsgVec:       make([]byte, 16000), // Default size (100 slots * 160 bytes)
-				Signature:    crypto.NewSignature([]byte("mock-signature")),
+				Signature:    crypto.Signature("mock-signature"),
 			}, nil
 		},
 		processBroadcast: func(ctx context.Context, round uint64, broadcast []byte) ([]byte, error) {
@@ -121,9 +125,9 @@ func (m *mockCryptoProvider) DeriveSharedSecret(privateKey crypto.PrivateKey, ot
 	return crypto.NewSharedKey([]byte("mock-shared-secret")), nil
 }
 
-func (m *mockCryptoProvider) KDF(masterKey crypto.SharedKey, round uint64, publishedSchedule []byte) ([]byte, []byte, error) {
-	pad1 := make([]byte, 400)     // Match SchedulingSlots
-	pad2 := make([]byte, 100*160) // Match MessageSlots * MessageSize
+func (m *mockCryptoProvider) KDF(masterKey crypto.SharedKey, round uint64, publishedSchedule []byte, l1, l2 int) ([]byte, []byte, error) {
+	pad1 := make([]byte, l1) // Match SchedulingSlots
+	pad2 := make([]byte, l2) // Match MessageSlots * MessageSize
 	return pad1, pad2, nil
 }
 
@@ -150,16 +154,24 @@ func NewMockNetworkTransport() NetworkTransport {
 
 type mockNetworkTransport struct{}
 
-func (m *mockNetworkTransport) SendToAggregator(ctx context.Context, aggregatorID string, message *ClientMessage) error {
+func (m *mockNetworkTransport) SendToAggregator(ctx context.Context, aggregatorID string, message *Signed[ClientMessage]) error {
 	return nil
 }
 
-func (m *mockNetworkTransport) SendAggregateToServer(ctx context.Context, serverID string, message *AggregatorMessage) error {
+func (m *mockNetworkTransport) SendAggregateToAggregator(ctx context.Context, serverID string, message *Signed[AggregatorMessage]) error {
 	return nil
 }
 
-func (m *mockNetworkTransport) SendShareToServer(ctx context.Context, serverID string, message *UnblindedShareMessage) error {
+func (m *mockNetworkTransport) SendAggregateToServer(ctx context.Context, serverID string, message *Signed[AggregatorMessage]) error {
 	return nil
+}
+
+func (m *mockNetworkTransport) SendShareToServer(ctx context.Context, serverID string, message *Signed[UnblindedShareMessage]) error {
+	return nil
+}
+
+func (m *mockNetworkTransport) FetchSchedule(ctx context.Context, serverID string, round uint64) (*PublishedSchedule, error) {
+	return nil, nil
 }
 
 func (m *mockNetworkTransport) BroadcastToClients(ctx context.Context, message *ServerMessage) error {
@@ -171,14 +183,31 @@ func (m *mockNetworkTransport) RegisterMessageHandler(handler func([]byte) error
 }
 
 // NewMockScheduler creates a mock scheduler for testing.
-func NewMockScheduler() Scheduler {
-	return &mockScheduler{}
+func NewMockScheduler(config *ZIPNetConfig) Scheduler {
+	return &mockScheduler{config: config}
 }
 
-type mockScheduler struct{}
+type mockScheduler struct {
+	config *ZIPNetConfig
+}
 
 func (m *mockScheduler) ComputeScheduleSlot(key []byte, round uint64) (uint32, crypto.Footprint, error) {
-	return 0, crypto.NewFootprint([]byte("mock-footprint")), nil
+	slotHash := sha256.Sum256([]byte(fmt.Sprintf("%x0%d", key, round)))
+	var slot uint32
+	slot |= uint32(slotHash[0])
+	slot |= uint32(slotHash[1]) << 8
+	slot |= uint32(slotHash[2]) << 16
+	slot |= uint32(slotHash[3]) << 24
+	slot = slot % (m.config.SchedulingSlots * ((m.config.FootprintBits / 8) - 1))
+
+	footprint := make([]byte, (m.config.FootprintBits+7)/8)
+	footprintHash := sha256.Sum256([]byte(fmt.Sprintf("%x1%d", key, round)))
+	for i := 0; i*32 < int((m.config.FootprintBits+7)/8); i++ {
+		vecHash := sha256.Sum256(binary.AppendVarint(footprintHash[:], int64(i)))
+		copy(footprint[i*32:], vecHash[:])
+	}
+
+	return slot, footprint, nil
 }
 
 func (m *mockScheduler) VerifySchedule(schedule PublishedSchedule, serverPK crypto.PublicKey) (bool, error) {
@@ -186,5 +215,15 @@ func (m *mockScheduler) VerifySchedule(schedule PublishedSchedule, serverPK cryp
 }
 
 func (m *mockScheduler) MapScheduleToMessageSlot(scheduleSlot uint32, schedule PublishedSchedule) (uint32, error) {
-	return 0, nil
+	zeroFootprint := make([]byte, (m.config.FootprintBits+7)/8)
+	for i := range scheduleSlot {
+		fp, err := schedule.FootprintAt(i, int32(m.config.FootprintBits)/8)
+		if err != nil {
+			return 0, err
+		}
+		if fp.Equal(zeroFootprint) {
+			return i, nil
+		}
+	}
+	return 0, errors.New("could not find message slot")
 }

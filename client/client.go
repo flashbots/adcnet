@@ -16,7 +16,6 @@ type ClientImpl struct {
 	config           *zipnet.ZIPNetConfig
 	tee              zipnet.TEE
 	crypto           zipnet.CryptoProvider
-	network          zipnet.NetworkTransport
 	scheduler        zipnet.Scheduler
 	publicKey        crypto.PublicKey
 	privateKey       crypto.PrivateKey
@@ -38,13 +37,11 @@ type ClientImpl struct {
 // - config: Protocol configuration parameters
 // - tee: Trusted Execution Environment for integrity protection
 // - cryptoProvider: Cryptographic operations provider
-// - network: Network communication transport
 // - scheduler: Slot scheduling mechanism
 //
 // Returns an initialized client or an error if creation fails.
 func NewClient(config *zipnet.ZIPNetConfig, tee zipnet.TEE,
 	cryptoProvider zipnet.CryptoProvider,
-	network zipnet.NetworkTransport,
 	scheduler zipnet.Scheduler) (*ClientImpl, error) {
 	if config == nil {
 		return nil, errors.New("config cannot be nil")
@@ -54,9 +51,6 @@ func NewClient(config *zipnet.ZIPNetConfig, tee zipnet.TEE,
 	}
 	if cryptoProvider == nil {
 		return nil, errors.New("crypto provider cannot be nil")
-	}
-	if network == nil {
-		return nil, errors.New("network transport cannot be nil")
 	}
 	if scheduler == nil {
 		return nil, errors.New("scheduler cannot be nil")
@@ -84,7 +78,6 @@ func NewClient(config *zipnet.ZIPNetConfig, tee zipnet.TEE,
 		config:            config,
 		tee:               tee,
 		crypto:            cryptoProvider,
-		network:           network,
 		scheduler:         scheduler,
 		publicKey:         publicKey,
 		privateKey:        privateKey,
@@ -147,7 +140,9 @@ func (c *ClientImpl) RegisterServerPublicKey(serverID string, publicKey crypto.P
 	return nil
 }
 
-// SubmitMessage prepares and submits a message for the current round.
+var ErrorFootprintCollision error = errors.New("scheduling collision error")
+
+// PrepareMessage prepares and submits a message for the current round.
 // It handles both actual message transmission and cover traffic generation.
 //
 // Parameters:
@@ -158,11 +153,11 @@ func (c *ClientImpl) RegisterServerPublicKey(serverID string, publicKey crypto.P
 // - publishedSchedule: The current round's published schedule
 //
 // Returns the prepared message or an error if preparation fails.
-func (c *ClientImpl) SubmitMessage(ctx context.Context, round uint64, msg []byte,
+func (c *ClientImpl) PrepareMessage(ctx context.Context, round uint64, msg []byte,
 	requestSlot bool,
-	publishedSchedule zipnet.PublishedSchedule) (*zipnet.ClientMessage, error) {
+	publishedSchedule zipnet.PublishedSchedule) (*zipnet.Signed[zipnet.ClientMessage], error) {
 	// Initialize empty vectors
-	nextSchedVec := make([]byte, c.config.SchedulingSlots)
+	nextSchedVec := make([]byte, c.config.SchedulingSlots*c.config.FootprintBits/8)
 	msgVec := make([]byte, c.config.MessageSlots*c.config.MessageSize)
 
 	// Verify the published schedule's signature
@@ -207,6 +202,8 @@ func (c *ClientImpl) SubmitMessage(ctx context.Context, round uint64, msg []byte
 		return nil, fmt.Errorf("failed to compute current schedule slot: %w", err)
 	}
 
+	var scheduleCollosion bool = false
+
 	// Check if our footprint is in the published schedule
 	fpBytes := curFootprint.Bytes()
 	if curSchedSlot+uint32(len(fpBytes)) <= uint32(len(publishedSchedule.Footprints)) {
@@ -216,7 +213,8 @@ func (c *ClientImpl) SubmitMessage(ctx context.Context, round uint64, msg []byte
 			return nil, fmt.Errorf("failed to extract footprint: %w", err)
 		}
 
-		if publishedFP.Equal(curFootprint) && msg != nil {
+		scheduleCollosion = !publishedFP.Equal(curFootprint)
+		if !scheduleCollosion && msg != nil {
 			// We have a reservation and a message to send
 			msgSlot, err := c.scheduler.MapScheduleToMessageSlot(curSchedSlot, publishedSchedule)
 			if err != nil {
@@ -239,11 +237,7 @@ func (c *ClientImpl) SubmitMessage(ctx context.Context, round uint64, msg []byte
 			}
 
 			// Copy message to vector
-			copy(msgVec[msgStartIdx:], msg)
-
-			// Append falsification tag
-			tagStartIdx := msgStartIdx + uint32(len(msg))
-			copy(msgVec[tagStartIdx:], tagBytes)
+			copy(msgVec[msgStartIdx:], append(msg, tagBytes...))
 
 			// Increment participation counter for talking messages
 			if !c.isCoverTraffic(msg) {
@@ -255,19 +249,22 @@ func (c *ClientImpl) SubmitMessage(ctx context.Context, round uint64, msg []byte
 	// Blind the vectors with server shared secrets
 	for serverID, sharedSecret := range c.sharedSecrets {
 		// Derive one-time pads for this round using KDF
-		pad1, pad2, err := c.crypto.KDF(sharedSecret, round, publishedSchedule.Footprints)
-		if err != nil {
-			return nil, fmt.Errorf("failed to derive pads for server %s: %w", serverID, err)
-		}
+		/*
+			pad1, pad2, err := c.crypto.KDF(sharedSecret, round, publishedSchedule.Footprints, len(nextSchedVec), len(msgVec))
+			if err != nil {
+				return nil, fmt.Errorf("failed to derive pads for server %s: %w", serverID, err)
+			}
 
-		// XOR the pads with the vectors
-		for i := 0; i < len(nextSchedVec) && i < len(pad1); i++ {
-			nextSchedVec[i] ^= pad1[i]
-		}
+				// XOR the pads with the vectors
+				// TODO: the pad should be as long as vector...
+				for i := 0; i < len(nextSchedVec); i++ {
+					nextSchedVec[i] ^= pad1[i%len(pad1)]
+				}
 
-		for i := 0; i < len(msgVec) && i < len(pad2); i++ {
-			msgVec[i] ^= pad2[i]
-		}
+				for i := 0; i < len(msgVec); i++ {
+					msgVec[i] ^= pad2[i%len(pad2)]
+				}
+		*/
 
 		// Ratchet the shared key for forward secrecy
 		newSharedKey, err := c.crypto.RatchetKey(sharedSecret)
@@ -280,64 +277,20 @@ func (c *ClientImpl) SubmitMessage(ctx context.Context, round uint64, msg []byte
 	}
 
 	// Create the message
-	message := &zipnet.ClientMessage{
+	message, err := zipnet.NewSigned(c.privateKey, &zipnet.ClientMessage{
 		Round:        round,
 		NextSchedVec: nextSchedVec,
 		MsgVec:       msgVec,
-	}
-
-	// Serialize the message for signing
-	serializedMsg, err := zipnet.SerializeMessage(message)
-	if err != nil {
-		return nil, fmt.Errorf("failed to serialize message: %w", err)
-	}
-
-	// Sign the message with our private key
-	signature, err := c.crypto.Sign(c.privateKey, serializedMsg)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign message: %w", err)
 	}
 
-	message.Signature = signature
-
-	// Send the message to aggregator if a network is configured
-	if c.network != nil {
-		aggregatorID := c.selectAggregator()
-		err = c.network.SendToAggregator(ctx, aggregatorID, message)
-		if err != nil {
-			return nil, fmt.Errorf("failed to send message to aggregator: %w", err)
-		}
+	if scheduleCollosion {
+		return message, ErrorFootprintCollision
+	} else {
+		return message, nil
 	}
-
-	return message, nil
-}
-
-// SendCoverTraffic prepares and sends cover traffic (an empty message) for
-// the current round to maintain anonymity.
-//
-// Parameters:
-// - ctx: Context for the operation
-// - round: Current protocol round number
-// - publishedSchedule: The current round's published schedule
-//
-// Returns the prepared message or an error if preparation fails.
-func (c *ClientImpl) SendCoverTraffic(ctx context.Context, round uint64, publishedSchedule zipnet.PublishedSchedule) (*zipnet.ClientMessage, error) {
-	// Cover traffic is just an empty message with no slot reservation
-	return c.SubmitMessage(ctx, round, nil, false, publishedSchedule)
-}
-
-// ReserveSlot reserves a message slot for the next round without sending
-// an actual message in the current round.
-//
-// Parameters:
-// - ctx: Context for the operation
-// - round: Current protocol round number
-// - publishedSchedule: The current round's published schedule
-//
-// Returns the prepared message or an error if preparation fails.
-func (c *ClientImpl) ReserveSlot(ctx context.Context, round uint64, publishedSchedule zipnet.PublishedSchedule) (*zipnet.ClientMessage, error) {
-	// Reserve a slot but don't send a message
-	return c.SubmitMessage(ctx, round, nil, true, publishedSchedule)
 }
 
 // ProcessBroadcast processes the broadcast message from the server to extract
@@ -349,7 +302,7 @@ func (c *ClientImpl) ReserveSlot(ctx context.Context, round uint64, publishedSch
 // - broadcast: The broadcast message from the server
 //
 // Returns the processed message data or an error if processing fails.
-func (c *ClientImpl) ProcessBroadcast(ctx context.Context, round uint64, broadcastMsg zipnet.ServerMessage) ([]byte, error) {
+func (c *ClientImpl) ProcessBroadcast(ctx context.Context, round uint64, signedBroadcastMsg *zipnet.Signed[zipnet.RoundOutput]) ([]byte, error) {
 	// Verify the signature
 	leaderServerID := c.config.AnytrustServers[0]
 	leaderPK, exists := c.serverPublicKeys[leaderServerID]
@@ -357,16 +310,13 @@ func (c *ClientImpl) ProcessBroadcast(ctx context.Context, round uint64, broadca
 		return nil, errors.New("leader server public key not registered")
 	}
 
-	// Create a copy of the message without the signature for verification
-	broadcastCopy := broadcastMsg
-	broadcastCopy.Signature = nil
-	serializedMsg, err := zipnet.SerializeMessage(&broadcastCopy)
+	broadcastMsg, recoveredPK, err := signedBroadcastMsg.Recover()
 	if err != nil {
-		return nil, fmt.Errorf("failed to serialize broadcast for verification: %w", err)
+		return nil, fmt.Errorf("could not recover broadcast signature: %w", err)
 	}
 
-	if err = c.crypto.Verify(leaderPK, serializedMsg, broadcastMsg.Signature); err != nil {
-		return nil, errors.New("invalid broadcast signature")
+	if !recoveredPK.Equal(leaderPK) {
+		return nil, fmt.Errorf("broadcast not signed by leader %s but rather by %s", leaderPK.String(), recoveredPK.String())
 	}
 
 	// Return the message vector for application processing

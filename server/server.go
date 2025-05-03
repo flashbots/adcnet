@@ -188,14 +188,20 @@ func (s *ServerImpl) RegisterServer(ctx context.Context,
 // UnblindAggregate removes this server's blinding factors from an aggregated message
 // by XORing in one-time pads derived from shared secrets with clients.
 func (s *ServerImpl) UnblindAggregate(ctx context.Context,
-	aggregate *zipnet.AggregatorMessage) (*zipnet.UnblindedShareMessage, error) {
+	signedAggregate *zipnet.Signed[zipnet.AggregatorMessage]) (*zipnet.Signed[zipnet.UnblindedShareMessage], error) {
 
-	if aggregate == nil {
-		return nil, errors.New("aggregate message cannot be nil")
+	// TODO : make sure we don't have to verify aggregator's pubkey is whitelisted
+	aggregate, aggPubkey, err := signedAggregate.Recover()
+	if err != nil {
+		return nil, fmt.Errorf("could not recover aggregator signature: %w", err)
 	}
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+
+	if _, found := s.regAggregators[aggPubkey.String()]; !found {
+		return nil, fmt.Errorf("aggregator %s not whitelisted", aggPubkey.String())
+	}
 
 	// Verify minimum client participation (for anonymity guarantees)
 	if uint32(len(aggregate.UserPKs)) < s.minClients {
@@ -204,7 +210,7 @@ func (s *ServerImpl) UnblindAggregate(ctx context.Context,
 	}
 
 	// Get the published schedule for this round
-	publishedSchedule, ok := s.schedules[aggregate.Round]
+	_ /*publishedSchedule*/, ok := s.schedules[aggregate.Round]
 	if !ok {
 		return nil, fmt.Errorf("no published schedule for round %d", aggregate.Round)
 	}
@@ -228,19 +234,22 @@ func (s *ServerImpl) UnblindAggregate(ctx context.Context,
 			return nil, fmt.Errorf("no shared secret for user: %s", userKey)
 		}
 
-		// Derive pads using KDF
-		pad1, pad2, err := s.cryptoProvider.KDF(sharedKey, aggregate.Round, publishedSchedule)
-		if err != nil {
-			return nil, fmt.Errorf("failed to derive pads: %w", err)
-		}
+		/*
+			// Derive pads using KDF
+			pad1, pad2, err := s.cryptoProvider.KDF(sharedKey, aggregate.Round, publishedSchedule, len(aSchedVec), len(aMsgVec))
+			if err != nil {
+				return nil, fmt.Errorf("failed to derive pads: %w", err)
+			}
 
-		// XOR the pads with the vectors
-		for i := 0; i < len(aSchedVec) && i < len(pad1); i++ {
-			aSchedVec[i] ^= pad1[i]
-		}
-		for i := 0; i < len(aMsgVec) && i < len(pad2); i++ {
-			aMsgVec[i] ^= pad2[i]
-		}
+			// XOR the pads with the vectors
+			// TODO: the pad should be as long as vector...
+			for i := 0; i < len(aSchedVec); i++ {
+				aSchedVec[i] ^= pad1[i%len(pad1)]
+			}
+			for i := 0; i < len(aMsgVec); i++ {
+				aMsgVec[i] ^= pad2[i%len(pad2)]
+			}
+		*/
 
 		// Ratchet the key for forward secrecy
 		ratchetedKey, err := s.cryptoProvider.RatchetKey(sharedKey)
@@ -257,13 +266,10 @@ func (s *ServerImpl) UnblindAggregate(ctx context.Context,
 		MsgVec:       aMsgVec,
 	}
 
-	unsignedUnblindedShare := &zipnet.UnblindedShareMessage{
-		EncryptedMsg:    aggregate,
-		KeyShare:        keyShare,
-		ServerPublicKey: s.publicKey,
-	}
-
-	unblindedShare, err := unsignedUnblindedShare.Sign(s.cryptoProvider, s.signingKey)
+	unblindedShare, err := zipnet.NewSigned(s.signingKey, &zipnet.UnblindedShareMessage{
+		EncryptedMsg: signedAggregate,
+		KeyShare:     keyShare,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign unblinded share: %w", err)
 	}
@@ -284,7 +290,7 @@ func (s *ServerImpl) UnblindAggregate(ctx context.Context,
 // DeriveRoundOutput combines unblinded shares from all anytrust servers
 // to produce the final broadcast message.
 func (s *ServerImpl) DeriveRoundOutput(ctx context.Context,
-	shares []*zipnet.UnblindedShareMessage) (*zipnet.RoundOutput, error) {
+	shares []*zipnet.UnblindedShareMessage) (*zipnet.Signed[zipnet.RoundOutput], error) {
 
 	if !s.isLeader {
 		return nil, errors.New("only leader can derive round output")
@@ -299,16 +305,26 @@ func (s *ServerImpl) DeriveRoundOutput(ctx context.Context,
 			s.anytrustGroupSize, len(shares))
 	}
 
-	// Verify all shares are for the same round
-	round := shares[0].EncryptedMsg.Round
-	for i, share := range shares {
-		if share.EncryptedMsg.Round != round {
-			return nil, fmt.Errorf("share %d has incorrect round: expected %d, got %d",
-				i, round, share.EncryptedMsg.Round)
-		}
+	authorizedAggMessages := []*zipnet.AggregatorMessage{}
 
-		// Verify the share's signature (in production code)
-		// TODO: Implement proper signature verification
+	// Verify all shares are for the same round
+	for _, share := range shares {
+		aggMsg, aggSigner, err := share.EncryptedMsg.Recover()
+		if err != nil {
+			return nil, fmt.Errorf("could not recover aggregator signature: %w", err)
+		}
+		if _, found := s.regAggregators[aggSigner.String()]; !found {
+			return nil, fmt.Errorf("non-whitelisted aggregator %s", aggSigner.String())
+		}
+		authorizedAggMessages = append(authorizedAggMessages, aggMsg)
+	}
+
+	round := authorizedAggMessages[0].Round
+	for i, aggMsg := range authorizedAggMessages {
+		if round != aggMsg.Round {
+			return nil, fmt.Errorf("share %d has incorrect round: expected %d, got %d",
+				i, round, aggMsg.Round)
+		}
 	}
 
 	// Initialize final message vectors
@@ -325,45 +341,15 @@ func (s *ServerImpl) DeriveRoundOutput(ctx context.Context,
 		}
 	}
 
-	// XOR with the original encrypted message to get the plaintext
-	for i := 0; i < len(finalSchedVec); i++ {
-		finalSchedVec[i] ^= shares[0].EncryptedMsg.NextSchedVec[i]
-	}
-	for i := 0; i < len(finalMsgVec); i++ {
-		finalMsgVec[i] ^= shares[0].EncryptedMsg.MsgVec[i]
-	}
-
-	// Create the final message
-	finalMessage := &zipnet.ScheduleMessage{
+	// Create and sign the round output
+	roundOutput, err := zipnet.NewSigned(s.signingKey, &zipnet.ScheduleMessage{
 		Round:        round,
 		NextSchedVec: finalSchedVec,
 		MsgVec:       finalMsgVec,
-	}
-
-	// Create and sign the round output
-	roundOutput := &zipnet.RoundOutput{
-		Round:            round,
-		Message:          finalMessage,
-		ServerSignatures: []zipnet.OutputSignature{},
-	}
-
-	// Sign the output
-	outputData, err := zipnet.SerializeMessage(finalMessage)
+	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to serialize final message: %w", err)
+		return nil, err
 	}
-
-	signature, err := s.cryptoProvider.Sign(s.signingKey, outputData)
-	if err != nil {
-		return nil, fmt.Errorf("failed to sign round output: %w", err)
-	}
-
-	// Add this server's signature
-	roundOutput.ServerSignatures = append(roundOutput.ServerSignatures,
-		zipnet.OutputSignature{
-			PublicKey: s.publicKey,
-			Signature: signature,
-		})
 
 	// Store the round output and next round's schedule
 	s.mu.Lock()

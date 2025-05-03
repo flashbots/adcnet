@@ -9,6 +9,56 @@ import (
 	"github.com/ruteri/go-zipnet/zipnet"
 )
 
+// UpdatedAggregatorMessageHelpers provides updated helpers for working with signed aggregator messages
+
+// GenerateTestSignedAggregatorMessage creates a signed aggregator message for testing
+func GenerateTestSignedAggregatorMessage(options ...AggregatorMessageOption) *zipnet.Signed[zipnet.AggregatorMessage] {
+	// Generate test key pair for signing
+	_, privateKey, _ := GenerateTestKeyPair()
+
+	// Generate the aggregator message
+	msg := GenerateTestAggregatorMessage(options...)
+
+	// Sign the message
+	signed, _ := zipnet.NewSigned(privateKey, msg)
+	return signed
+}
+
+// GenerateTestSignedAggregatorMessageFromClients creates a signed aggregator message from client messages
+func GenerateTestSignedAggregatorMessageFromClients(
+	clientMessages []*zipnet.ClientMessage,
+	clientPKs []crypto.PublicKey,
+	privateKey crypto.PrivateKey,
+	options ...AggregatorMessageOption) *zipnet.Signed[zipnet.AggregatorMessage] {
+
+	// Generate the aggregator message
+	msg := GenerateTestAggregatorMessageFromClients(clientMessages, clientPKs, options...)
+
+	// Sign the message
+	signed, _ := zipnet.NewSigned(privateKey, msg)
+	return signed
+}
+
+// UpdatedTestHelpers adds additional helper functions for working with Signed messages
+
+// ExtractMessageFromSignedAggregator extracts the message vector from a signed aggregator message
+func ExtractMessageFromSignedAggregator(signedMsg *zipnet.Signed[zipnet.AggregatorMessage]) []byte {
+	return signedMsg.UnsafeObject().MsgVec
+}
+
+// ExtractUserPKsFromSignedAggregator extracts the user public keys from a signed aggregator message
+func ExtractUserPKsFromSignedAggregator(signedMsg *zipnet.Signed[zipnet.AggregatorMessage]) []crypto.PublicKey {
+	return signedMsg.UnsafeObject().UserPKs
+}
+
+// ExtractMessageSlotFromSignedAggregator extracts a specific message slot from a signed aggregator message
+func ExtractMessageSlotFromSignedAggregator(signedMsg *zipnet.Signed[zipnet.AggregatorMessage], slot int, msgSize int) []byte {
+	msgVec := signedMsg.UnsafeObject().MsgVec
+	return ExtractMessageFromSlot(msgVec, slot, msgSize)
+}
+
+// Existing TestUtil functions that remain unchanged below...
+
 // =====================================
 // Configuration Generators
 // =====================================
@@ -91,7 +141,7 @@ func NewTestConfig(options ...TestConfigOption) *zipnet.ZIPNetConfig {
 		MinClients:      10,
 		AnytrustServers: []string{"server1.test", "server2.test", "server3.test"},
 		Aggregators:     []string{"agg1.test"},
-		RoundsPerWindow: 100,
+		RoundsPerWindow: 5,
 	}
 
 	// Apply all provided options
@@ -137,12 +187,12 @@ func GenerateTestPublicKeys(count int) ([]crypto.PublicKey, error) {
 // GenerateTestSignature generates a test signature for testing
 func GenerateTestSignature() crypto.Signature {
 	// Create a deterministic signature for testing
-	return crypto.NewSignature([]byte("test-signature"))
+	return crypto.Signature([]byte("test-signature"))
 }
 
 // GenerateUniqueTestSignature generates a unique test signature
 func GenerateUniqueTestSignature(id string) crypto.Signature {
-	return crypto.NewSignature([]byte("test-signature-" + id))
+	return crypto.Signature([]byte("test-signature-" + id))
 }
 
 // GenerateTestFootprint generates a test footprint for a slot
@@ -186,9 +236,9 @@ func WithMsgVec(vec []byte) MessageOption {
 }
 
 // WithSignature sets the signature for a message
-func WithSignature(sig crypto.Signature) MessageOption {
+func WithSignature(sig *crypto.Signature) MessageOption {
 	return func(msg *zipnet.ScheduleMessage) {
-		msg.Signature = sig
+		msg.Signature = *sig
 	}
 }
 
@@ -356,13 +406,6 @@ func GenerateTestAggregatorMessageFromClients(clientMessages []*zipnet.ClientMes
 // UnblindedShareOption is a function that modifies an UnblindedShareMessage
 type UnblindedShareOption func(*zipnet.UnblindedShareMessage)
 
-// WithServerPublicKey sets the server public key for an unblinded share
-func WithServerPublicKey(key crypto.PublicKey) UnblindedShareOption {
-	return func(msg *zipnet.UnblindedShareMessage) {
-		msg.ServerPublicKey = key
-	}
-}
-
 // WithKeyShare sets the key share for an unblinded share
 func WithKeyShare(share *zipnet.ScheduleMessage) UnblindedShareOption {
 	return func(msg *zipnet.UnblindedShareMessage) {
@@ -370,32 +413,24 @@ func WithKeyShare(share *zipnet.ScheduleMessage) UnblindedShareOption {
 	}
 }
 
-// WithShareSignature sets the signature for an unblinded share
-func WithShareSignature(sig crypto.Signature) UnblindedShareOption {
-	return func(msg *zipnet.UnblindedShareMessage) {
-		msg.Signature = sig
-	}
-}
-
 // GenerateTestUnblindedShare generates a test unblinded share message
-func GenerateTestUnblindedShare(encryptedMsg *zipnet.AggregatorMessage, options ...UnblindedShareOption) *zipnet.UnblindedShareMessage {
+func GenerateTestUnblindedShare(encryptedMsg *zipnet.Signed[zipnet.AggregatorMessage], options ...UnblindedShareOption) *zipnet.Signed[zipnet.UnblindedShareMessage] {
 	// Generate server key pair
-	serverPK, _, _ := GenerateTestKeyPair()
+	_, serverPrivkey, _ := GenerateTestKeyPair()
 
+	rawAggMsg, _, _ := encryptedMsg.Recover()
 	// Create default key share (all zeros)
 	keyShare := &zipnet.ScheduleMessage{
-		Round:        encryptedMsg.Round,
-		NextSchedVec: make([]byte, len(encryptedMsg.NextSchedVec)),
-		MsgVec:       make([]byte, len(encryptedMsg.MsgVec)),
+		Round:        rawAggMsg.Round,
+		NextSchedVec: make([]byte, len(rawAggMsg.NextSchedVec)),
+		MsgVec:       make([]byte, len(rawAggMsg.MsgVec)),
 		Signature:    GenerateTestSignature(),
 	}
 
 	// Create unblinded share
 	share := &zipnet.UnblindedShareMessage{
-		EncryptedMsg:    encryptedMsg,
-		KeyShare:        keyShare,
-		Signature:       GenerateTestSignature(),
-		ServerPublicKey: serverPK,
+		EncryptedMsg: encryptedMsg,
+		KeyShare:     keyShare,
 	}
 
 	// Apply all provided options
@@ -403,18 +438,12 @@ func GenerateTestUnblindedShare(encryptedMsg *zipnet.AggregatorMessage, options 
 		option(share)
 	}
 
-	return share
+	signed, _ := zipnet.NewSigned(serverPrivkey, share)
+	return signed
 }
 
 // RoundOutputOption is a function that modifies a RoundOutput
 type RoundOutputOption func(*zipnet.RoundOutput)
-
-// WithOutputSignatures sets the server signatures for a round output
-func WithOutputSignatures(signatures []zipnet.OutputSignature) RoundOutputOption {
-	return func(output *zipnet.RoundOutput) {
-		output.ServerSignatures = signatures
-	}
-}
 
 // GenerateTestRoundOutput generates a test round output
 func GenerateTestRoundOutput(round uint64, message *zipnet.ScheduleMessage, options ...RoundOutputOption) *zipnet.RoundOutput {
@@ -428,19 +457,11 @@ func GenerateTestRoundOutput(round uint64, message *zipnet.ScheduleMessage, opti
 		}
 	}
 
-	// Create round output
-	output := &zipnet.RoundOutput{
-		Round:            round,
-		Message:          message,
-		ServerSignatures: signatures,
-	}
-
-	// Apply all provided options
 	for _, option := range options {
-		option(output)
+		option(message)
 	}
 
-	return output
+	return message
 }
 
 // =====================================

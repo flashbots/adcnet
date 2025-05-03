@@ -2,91 +2,16 @@ package client
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
 
+	"github.com/ruteri/go-zipnet/aggregator"
 	"github.com/ruteri/go-zipnet/crypto"
+	"github.com/ruteri/go-zipnet/server"
 	"github.com/ruteri/go-zipnet/zipnet"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// TestClientParticipationTracking specifically tests the participation counter
-func TestClientParticipationTracking(t *testing.T) {
-	c, config, _ := setupTestClient(t)
-
-	// Register server
-	serverPK, _, err := crypto.GenerateKeyPair()
-	require.NoError(t, err)
-	err = c.RegisterServerPublicKey("server1.test", serverPK)
-	require.NoError(t, err)
-
-	// Create test schedule
-	footprints := make([]byte, config.SchedulingSlots)
-	testSchedule := zipnet.PublishedSchedule{
-		Footprints: footprints,
-		Signature:  crypto.NewSignature([]byte("test-signature")),
-	}
-
-	ctx := context.Background()
-
-	// 1. Initial counter should be 0
-	initialCount := c.GetTimesParticipated()
-	t.Logf("Initial participation count: %d", initialCount)
-
-	// 2. Send cover traffic and check counter
-	_, err = c.SendCoverTraffic(ctx, 1, testSchedule)
-	require.NoError(t, err)
-	coverCount := c.GetTimesParticipated()
-	t.Logf("After cover traffic: %d", coverCount)
-
-	// 3. Reserve a slot and check counter
-	_, err = c.ReserveSlot(ctx, 2, testSchedule)
-	require.NoError(t, err)
-	reserveCount := c.GetTimesParticipated()
-	t.Logf("After reservation: %d", reserveCount)
-
-	// 4. Send a real message and check counter
-	_, err = c.SubmitMessage(ctx, 3, []byte("test message"), false, testSchedule)
-	require.NoError(t, err)
-	msgCount := c.GetTimesParticipated()
-	t.Logf("After real message: %d", msgCount)
-}
-
-// TestClientSetup verifies client initialization with all required dependencies
-func TestClientSetup(t *testing.T) {
-	// Setup dependencies
-	config := &zipnet.ZIPNetConfig{
-		RoundDuration:   5 * time.Second,
-		MessageSlots:    100,
-		MessageSize:     160,
-		SchedulingSlots: 400,
-		FootprintBits:   64,
-		MinClients:      10,
-		AnytrustServers: []string{"server1.test", "server2.test", "server3.test"},
-		Aggregators:     []string{"agg1.test"},
-		RoundsPerWindow: 100,
-	}
-	tee, err := zipnet.NewInMemoryTEE()
-	require.NoError(t, err)
-	cryptoProvider := crypto.NewStandardCryptoProvider()
-	network := zipnet.NewMockNetworkTransport()
-	scheduler := zipnet.NewMockScheduler()
-
-	// Create client
-	c, err := NewClient(config, tee, cryptoProvider, network, scheduler)
-	require.NoError(t, err)
-	require.NotNil(t, c)
-
-	// Verify client has a valid public key
-	pk := c.GetPublicKey()
-	require.NotNil(t, pk)
-	require.NotEmpty(t, pk.Bytes())
-
-	// Verify client has zero participation at start
-	require.Equal(t, uint32(0), c.GetTimesParticipated())
-}
 
 // TestServerRegistration verifies client can register server public keys
 func TestServerRegistration(t *testing.T) {
@@ -115,259 +40,233 @@ func TestServerRegistration(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestSubmitMessage verifies client can prepare and submit messages
-func TestSubmitMessage(t *testing.T) {
-	c, config, _ := setupTestClient(t)
-
-	// Create a test schedule
-	footprints := make([]byte, config.SchedulingSlots)
-	testSchedule := zipnet.PublishedSchedule{
-		Footprints: footprints,
-		Signature:  crypto.NewSignature([]byte("test-signature")),
-	}
-
-	// Register a server
-	serverPK, _, err := crypto.GenerateKeyPair()
-	require.NoError(t, err)
-	err = c.RegisterServerPublicKey("server1.test", serverPK)
-	require.NoError(t, err)
-
-	// Submit a message
+// TestZIPNetEndToEnd tests a complete end-to-end flow of the ZIPNet protocol.
+// It involves two clients, one aggregator, and one server in a full multi-round exchange.
+func TestZIPNetEndToEnd(t *testing.T) {
+	// Set up a context for all operations
 	ctx := context.Background()
-	msg := []byte("test message")
-	clientMsg, err := c.SubmitMessage(ctx, 1, msg, true, testSchedule)
-	require.NoError(t, err)
-	require.NotNil(t, clientMsg)
 
-	// Verify message fields
-	assert.Equal(t, uint64(1), clientMsg.Round)
-	assert.NotNil(t, clientMsg.NextSchedVec)
-	assert.NotNil(t, clientMsg.MsgVec)
-	assert.NotNil(t, clientMsg.Signature)
-	assert.Len(t, clientMsg.NextSchedVec, int(config.SchedulingSlots))
-}
-
-// TestCoverTraffic verifies client can send cover traffic
-func TestCoverTraffic(t *testing.T) {
-	c, config, _ := setupTestClient(t)
-
-	// Create a test schedule
-	footprints := make([]byte, config.SchedulingSlots)
-	testSchedule := zipnet.PublishedSchedule{
-		Footprints: footprints,
-		Signature:  crypto.NewSignature([]byte("test-signature")),
+	// Create shared configuration for all components
+	config := &zipnet.ZIPNetConfig{
+		RoundDuration:   1 * time.Second,
+		MessageSlots:    10,
+		MessageSize:     160,
+		SchedulingSlots: 40,
+		FootprintBits:   64,
+		MinClients:      2,
+		AnytrustServers: []string{"server1.test"},
+		Aggregators:     []string{"agg1.test"},
+		RoundsPerWindow: 100,
 	}
 
-	// Register a server
-	serverPK, _, err := crypto.GenerateKeyPair()
-	require.NoError(t, err)
-	err = c.RegisterServerPublicKey("server1.test", serverPK)
-	require.NoError(t, err)
-
-	// Send cover traffic
-	ctx := context.Background()
-	initialParticipation := c.GetTimesParticipated()
-
-	clientMsg, err := c.SendCoverTraffic(ctx, 1, testSchedule)
-	require.NoError(t, err)
-	require.NotNil(t, clientMsg)
-
-	// Verify participation count doesn't increase for cover traffic
-	t.Logf("Participation: initial=%d, after cover traffic=%d",
-		initialParticipation, c.GetTimesParticipated())
-}
-
-// TestReserveSlot verifies client can reserve slots for future messages
-func TestReserveSlot(t *testing.T) {
-	c, config, _ := setupTestClient(t)
-
-	// Create a test schedule
-	footprints := make([]byte, config.SchedulingSlots)
-	testSchedule := zipnet.PublishedSchedule{
-		Footprints: footprints,
-		Signature:  crypto.NewSignature([]byte("test-signature")),
-	}
-
-	// Register a server
-	serverPK, _, err := crypto.GenerateKeyPair()
-	require.NoError(t, err)
-	err = c.RegisterServerPublicKey("server1.test", serverPK)
-	require.NoError(t, err)
-
-	// Reserve a slot
-	ctx := context.Background()
-	clientMsg, err := c.ReserveSlot(ctx, 1, testSchedule)
-	require.NoError(t, err)
-	require.NotNil(t, clientMsg)
-
-	// Verify nextSchedVec is not all zeros (contains a footprint)
-	allZeros := true
-	for _, b := range clientMsg.NextSchedVec {
-		if b != 0 {
-			allZeros = false
-			break
-		}
-	}
-	assert.False(t, allZeros, "NextSchedVec should contain a non-zero footprint")
-}
-
-// TestProcessBroadcast verifies client can process server broadcasts
-func TestProcessBroadcast(t *testing.T) {
-	c, config, _ := setupTestClient(t)
-
-	// Register server public key
-	serverPK, serverSK, err := crypto.GenerateKeyPair()
-	require.NoError(t, err)
-	err = c.RegisterServerPublicKey("server1.test", serverPK)
-	require.NoError(t, err)
-
-	// Create a broadcast message
-	broadcastMsg := &zipnet.ServerMessage{
-		Round:        1,
-		NextSchedVec: make([]byte, config.SchedulingSlots),
-		MsgVec:       make([]byte, config.MessageSlots*config.MessageSize),
-	}
-
-	// Place test data in the message vector
-	testData := []byte("broadcast test message")
-	copy(broadcastMsg.MsgVec, testData)
-
-	// Sign the message
-	cryptoProvider := crypto.NewStandardCryptoProvider()
-	serializedMsg, err := zipnet.SerializeMessage(broadcastMsg)
-	require.NoError(t, err)
-	sig, err := cryptoProvider.Sign(serverSK, serializedMsg)
-	require.NoError(t, err)
-	broadcastMsg.Signature = sig
-
-	// Process the broadcast
-	ctx := context.Background()
-	result, err := c.ProcessBroadcast(ctx, 1, *broadcastMsg)
-	require.NoError(t, err)
-	require.NotNil(t, result)
-
-	// Verify we got the message vector
-	assert.Equal(t, broadcastMsg.MsgVec, result)
-}
-
-// TestMultiRoundExchange simulates a multi-round exchange with reservations and messages
-func TestMultiRoundExchange(t *testing.T) {
-	c, config, _ := setupTestClient(t)
+	// Create a shared crypto provider for consistent cryptographic operations
 	cryptoProvider := crypto.NewStandardCryptoProvider()
 
-	// Register server
-	serverPK, serverSK, err := crypto.GenerateKeyPair()
-	require.NoError(t, err)
-	err = c.RegisterServerPublicKey("server1.test", serverPK)
+	// STEP 1: Set up the server (leader)
+	t.Log("Setting up server...")
+	zipServer, err := server.NewServer(config, cryptoProvider, true)
 	require.NoError(t, err)
 
-	// Initial round (1): Reserve a slot
+	// Get server public key for client registration
+	serverPubKey := zipServer.GetPublicKey()
+
+	// STEP 2: Set up the aggregator
+	t.Log("Setting up aggregator...")
+	// Generate aggregator keys
+	aggPubKey, aggPrivKey, err := crypto.GenerateKeyPair()
+	require.NoError(t, err)
+
+	// Empty initial user list - we'll add them after creating clients
+	registeredUsers := []crypto.PublicKey{}
+	registeredAggs := []crypto.PublicKey{}
+
+	agg, err := aggregator.NewAggregator(
+		config,
+		aggPrivKey,
+		aggPubKey,
+		cryptoProvider,
+		registeredUsers,
+		registeredAggs,
+		0, // Leaf aggregator
+	)
+	require.NoError(t, err)
+
+	// Register aggregator with server
+	aggBlob := &zipnet.AggregatorRegistrationBlob{
+		PublicKey: aggPubKey,
+		Level:     0,
+	}
+	err = zipServer.RegisterAggregator(ctx, aggBlob)
+	require.NoError(t, err)
+
+	// STEP 3: Set up the two clients
+	t.Log("Setting up clients...")
+	// Create two separate TEEs for the clients
+	tee1, err := zipnet.NewInMemoryTEE()
+	require.NoError(t, err)
+	tee2, err := zipnet.NewInMemoryTEE()
+	require.NoError(t, err)
+
+	// Create mock components for the clients
+	mockScheduler := zipnet.NewMockScheduler(config)
+
+	// Create two clients
+	client1, err := NewClient(config, tee1, cryptoProvider, mockScheduler)
+	require.NoError(t, err)
+	client2, err := NewClient(config, tee2, cryptoProvider, mockScheduler)
+	require.NoError(t, err)
+
+	// Register server with both clients
+	err = client1.RegisterServerPublicKey("server1.test", serverPubKey)
+	require.NoError(t, err)
+	err = client2.RegisterServerPublicKey("server1.test", serverPubKey)
+	require.NoError(t, err)
+
+	// Register both clients with the server and aggregator
+	t.Log("Registering clients with server and aggregator...")
+	err = zipServer.RegisterClient(ctx, client1.GetPublicKey(), []byte("attestation1"))
+	require.NoError(t, err)
+	err = zipServer.RegisterClient(ctx, client2.GetPublicKey(), []byte("attestation2"))
+	require.NoError(t, err)
+
+	// Whitelist both clients with the aggregator
+	agg.WhitelistUser(client1.GetPublicKey())
+	agg.WhitelistUser(client2.GetPublicKey())
+
+	// STEP 4: Run Round 1 (Reservation round)
+	t.Log("Starting round 1 (reservation round)...")
+	round1 := uint64(1)
+
+	// Initialize the round for the aggregator
+	agg.Reset(round1)
+
+	// Create an empty initial schedule for round 1
 	initialSchedule := zipnet.PublishedSchedule{
 		Footprints: make([]byte, config.SchedulingSlots),
-		Signature:  crypto.NewSignature([]byte("test-signature")),
+		Signature:  crypto.NewSignature([]byte("initial-signature")),
 	}
 
-	ctx := context.Background()
-	reserveMsg, err := c.ReserveSlot(ctx, 1, initialSchedule)
+	// Set the schedule on the server
+	err = zipServer.SetSchedule(ctx, round1, initialSchedule.Footprints, initialSchedule.Signature)
 	require.NoError(t, err)
 
-	// Simulate server processing and publishing schedule for round 2
-	// We'd normally combine reservations from all clients, but here we'll just use our own
+	// Both clients send reservation requests for round 2
+	reserveMsg1, err := client1.PrepareMessage(ctx, round1, nil, true, initialSchedule)
+	require.NoError(t, err)
+	reserveMsg2, err := client2.PrepareMessage(ctx, round1, nil, true, initialSchedule)
+	require.NoError(t, err)
+
+	// Submit both messages to the aggregator
+	err = agg.ReceiveClientMessage(ctx, reserveMsg1)
+	require.NoError(t, err)
+	err = agg.ReceiveClientMessage(ctx, reserveMsg2)
+	require.NoError(t, err)
+
+	// Aggregate the messages
+	aggregatedMsg, err := agg.AggregateMessages(ctx, round1)
+	require.NoError(t, err)
+
+	// The server unblinds the aggregated message
+	unboundShare, err := zipServer.UnblindAggregate(ctx, aggregatedMsg)
+	require.NoError(t, err)
+
+	t.Log(unboundShare.Object.KeyShare.NextSchedVec)
+
+	// Server derives the round output (only one server, so just use its own share)
+	shares := []*zipnet.UnblindedShareMessage{unboundShare.UnsafeObject()}
+	roundOutput, err := zipServer.DeriveRoundOutput(ctx, shares)
+	require.NoError(t, err)
+	t.Log(roundOutput.Object.NextSchedVec)
+	t.Log(roundOutput.Object.MsgVec)
+
+	// Server publishes the schedule for round 2 based on the next schedule vector
+	scheduleBytes, signature, err := zipServer.PublishSchedule(ctx, round1+1, roundOutput.UnsafeObject().NextSchedVec)
+	require.NoError(t, err)
+
 	round2Schedule := zipnet.PublishedSchedule{
-		Footprints: reserveMsg.NextSchedVec,
-		Signature:  crypto.NewSignature([]byte("server-signature")),
+		Footprints: scheduleBytes,
+		Signature:  signature,
 	}
 
-	// Round 2: Send a message using our reservation
-	messageContent := []byte("test message for round 2")
-	sendMsg, err := c.SubmitMessage(ctx, 2, messageContent, true, round2Schedule)
+	// STEP 5: Run Round 2 (Message round)
+	t.Log("Starting round 2 (message round)...")
+	round2 := uint64(2)
+
+	// Reset aggregator for round 2
+	agg.Reset(round2)
+
+	// One client sends a real message, the other sends cover traffic
+	messageContent := []byte("This is a secret message from client 1")
+
+	// Client 1 sends a real message using its reservation
+	msgClient1, err := client1.PrepareMessage(ctx, round2, messageContent, false, round2Schedule)
 	require.NoError(t, err)
 
-	// Check participation count - in the current implementation, this might be 0
-	// if the client only increments for successful transmissions (after seeing a reservation in the schedule)
-	participationCount := c.GetTimesParticipated()
-	t.Logf("Participation count after message: %d", participationCount)
-
-	// We'll update our assertion based on the actual implementation behavior
-	// The key expectation from a protocol perspective is that real messages are
-	// counted differently than cover traffic for rate limiting purposes
-
-	// Simulate server broadcast for round 2
-	round2Broadcast := &zipnet.ServerMessage{
-		Round:        2,
-		NextSchedVec: sendMsg.NextSchedVec, // Include reservations for round 3
-		MsgVec:       sendMsg.MsgVec,       // Include messages from round 2
-	}
-	serializedBroadcast, err := zipnet.SerializeMessage(round2Broadcast)
+	// Client 2 sends cover traffic (empty message)
+	msgClient2, err := client2.PrepareMessage(ctx, round2, nil, false, round2Schedule)
 	require.NoError(t, err)
-	broadcastSig, err := cryptoProvider.Sign(serverSK, serializedBroadcast)
-	require.NoError(t, err)
-	round2Broadcast.Signature = broadcastSig
 
-	// Process the broadcast
-	msgVec, err := c.ProcessBroadcast(ctx, 2, *round2Broadcast)
-	require.NoError(t, err)
-	require.NotNil(t, msgVec)
-
-	// Round 3 schedule
-	round3Schedule := zipnet.PublishedSchedule{
-		Footprints: round2Broadcast.NextSchedVec,
-		Signature:  crypto.NewSignature([]byte("server-signature-3")),
+	// Check if either client had a footprint collision
+	// The clients don't know in advance if their footprints would collide
+	if err == ErrorFootprintCollision {
+		t.Log("Client 1 had a footprint collision, trying again...")
+		// In a real implementation, the client would try again in the next round
 	}
 
-	// Send cover traffic in round 3
-	coverMsg, err := c.SendCoverTraffic(ctx, 3, round3Schedule)
+	// Submit both messages to the aggregator
+	err = agg.ReceiveClientMessage(ctx, msgClient1)
 	require.NoError(t, err)
-	require.NotNil(t, coverMsg)
-
-	// In ZIPNet protocol, cover traffic shouldn't count toward participation limits
-	// Log the current count to understand the implementation behavior
-	t.Logf("Participation count after cover traffic: %d", c.GetTimesParticipated())
-}
-
-// TestRoundTransition tests client behavior when transitioning between rounds
-func TestRoundTransition(t *testing.T) {
-	c, config, _ := setupTestClient(t)
-
-	// Register server
-	serverPK, _, err := crypto.GenerateKeyPair()
-	require.NoError(t, err)
-	err = c.RegisterServerPublicKey("server1.test", serverPK)
+	err = agg.ReceiveClientMessage(ctx, msgClient2)
 	require.NoError(t, err)
 
-	// Create test schedule
-	footprints := make([]byte, config.SchedulingSlots)
-	testSchedule := zipnet.PublishedSchedule{
-		Footprints: footprints,
-		Signature:  crypto.NewSignature([]byte("test-signature")),
+	// Aggregate the messages
+	aggregatedMsg2, err := agg.AggregateMessages(ctx, round2)
+	require.NoError(t, err)
+
+	// The server unblinds the aggregated message
+	unboundShare2, err := zipServer.UnblindAggregate(ctx, aggregatedMsg2)
+	require.NoError(t, err)
+
+	// Server derives the round output
+	shares2 := []*zipnet.UnblindedShareMessage{unboundShare2.UnsafeObject()}
+	roundOutput2, err := zipServer.DeriveRoundOutput(ctx, shares2)
+	require.NoError(t, err)
+
+	// STEP 6: Verify the results
+	t.Log("Verifying results...")
+
+	// Both clients process the broadcast
+	clientReceived1, err := client1.ProcessBroadcast(ctx, round2, roundOutput2)
+	require.NoError(t, err)
+	clientReceived2, err := client2.ProcessBroadcast(ctx, round2, roundOutput2)
+	require.NoError(t, err)
+
+	// For testing purposes, manually inspect the message vector to find our message
+	// In a real implementation, clients would know their assigned slots
+	foundMessage := false
+	msgSize := int(config.MessageSize)
+
+	for slot := 0; slot < int(config.MessageSlots); slot++ {
+		start := slot * msgSize
+		end := start + len(messageContent)
+
+		if end <= len(clientReceived1) {
+			extracted := clientReceived1[start:end]
+			if string(extracted) == string(messageContent) {
+				foundMessage = true
+				t.Logf("Found message in slot %d: %s", slot, string(extracted))
+				break
+			}
+		}
 	}
 
-	// Submit real messages in 5 consecutive rounds within the same window
-	ctx := context.Background()
-	initialCount := c.GetTimesParticipated()
+	// Assert that we found the message in the broadcast
+	assert.True(t, foundMessage, "The original message was not found in the broadcast")
 
-	for round := uint64(1); round <= 5; round++ {
-		msg := []byte(fmt.Sprintf("message for round %d", round))
-		_, err := c.SubmitMessage(ctx, round, msg, false, testSchedule)
-		require.NoError(t, err)
-		t.Logf("Participation after round %d: %d", round, c.GetTimesParticipated())
-	}
+	// Verify both clients received the same broadcast (anonymity property)
+	assert.Equal(t, clientReceived1, clientReceived2, "Both clients should receive the same broadcast")
 
-	// Verify participation count increases after real messages
-	t.Logf("Participation counts: initial=%d, after 5 rounds=%d",
-		initialCount, c.GetTimesParticipated())
-
-	// Now simulate crossing a window boundary (round 100 to 101)
-	_, err = c.SubmitMessage(ctx, uint64(config.RoundsPerWindow), []byte("last message in window"), false, testSchedule)
-	require.NoError(t, err)
-
-	// Submit message in the first round of new window
-	_, err = c.SubmitMessage(ctx, uint64(config.RoundsPerWindow+1), []byte("first message in new window"), false, testSchedule)
-	require.NoError(t, err)
-
-	// In ZIPNet, crossing a window boundary should reset the participation counter
-	// Log the current value to understand the implementation
-	t.Logf("Participation count after window boundary: %d", c.GetTimesParticipated())
+	t.Log("End-to-end test completed successfully")
 }
 
 // TestCorrectXORBlinding tests that the client properly blinds messages using XOR
@@ -395,7 +294,9 @@ func TestCorrectXORBlinding(t *testing.T) {
 	// Submit a message
 	ctx := context.Background()
 	msg := []byte("test message for blinding verification")
-	clientMsg, err := c.SubmitMessage(ctx, 1, msg, false, testSchedule)
+	signedClientMsg, err := c.PrepareMessage(ctx, 1, msg, false, testSchedule)
+	require.NoError(t, err)
+	clientMsg, _, err := signedClientMsg.Recover()
 	require.NoError(t, err)
 
 	// In a real system, this would be simulated by having the servers unblind the message
@@ -440,7 +341,9 @@ func TestFootprintReservationAndUse(t *testing.T) {
 
 	// Step 1: Reserve a slot for round 2
 	ctx := context.Background()
-	reserveMsg, err := c.ReserveSlot(ctx, 1, emptySchedule)
+	signedReserveMsg, err := c.PrepareMessage(ctx, 1, nil, true, emptySchedule)
+	require.NoError(t, err)
+	reserveMsg, _, err := signedReserveMsg.Recover()
 	require.NoError(t, err)
 
 	// Sign the next schedule (simulating server publishing it)
@@ -462,7 +365,7 @@ func TestFootprintReservationAndUse(t *testing.T) {
 
 	// Step 2: Send an actual message in round 2 using our reservation
 	testMessage := []byte("message using reserved slot")
-	_, err = c.SubmitMessage(ctx, 2, testMessage, false, round2Schedule)
+	_, err = c.PrepareMessage(ctx, 2, testMessage, false, round2Schedule)
 	require.NoError(t, err)
 
 	// The message vector should now contain our blinded message
@@ -490,10 +393,9 @@ func setupTestClient(t *testing.T) (*ClientImpl, *zipnet.ZIPNetConfig, zipnet.TE
 	tee, err := zipnet.NewInMemoryTEE()
 	require.NoError(t, err)
 	cryptoProvider := crypto.NewStandardCryptoProvider()
-	network := zipnet.NewMockNetworkTransport()
-	scheduler := zipnet.NewMockScheduler()
+	scheduler := zipnet.NewMockScheduler(config)
 
-	c, err := NewClient(config, tee, cryptoProvider, network, scheduler)
+	c, err := NewClient(config, tee, cryptoProvider, scheduler)
 	require.NoError(t, err)
 	require.NotNil(t, c)
 

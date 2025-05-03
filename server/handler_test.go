@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -39,8 +41,10 @@ func TestServerHandlerGreenPath(t *testing.T) {
 	r := chi.NewRouter()
 	handler.RegisterRoutes(r)
 
+	leaderServer := httptest.NewServer(r)
+
 	// Test 1: Register an aggregator
-	aggPK, _, err := crypto.GenerateKeyPair()
+	aggPK, aggPriv, err := crypto.GenerateKeyPair()
 	require.NoError(t, err)
 
 	aggData, err := zipnet.SerializeMessage(&zipnet.AggregatorRegistrationBlob{
@@ -58,30 +62,18 @@ func TestServerHandlerGreenPath(t *testing.T) {
 
 	// Test 2: Register another server
 	followerServerImpl := setupTestServer(t, false)
-	serverData, err := zipnet.SerializeMessage(followerServerImpl.GetRegistrationBlob())
+	followerServerData, err := zipnet.SerializeMessage(followerServerImpl.GetRegistrationBlob())
 	require.NoError(t, err)
 
 	w = httptest.NewRecorder()
-	httpReq, err = http.NewRequest("POST", "/server/register-server", bytes.NewReader(serverData))
+	httpReq, err = http.NewRequest("POST", "/server/register-server", bytes.NewReader(followerServerData))
 	require.NoError(t, err)
 
 	r.ServeHTTP(w, httpReq)
 	assert.Equal(t, http.StatusOK, w.Code)
 
 	followerTransport := StubNetworkTransport{
-		S: map[string]func(*zipnet.UnblindedShareMessage) error{
-			serverImpl.publicKey.String(): func(msg *zipnet.UnblindedShareMessage) error {
-				shareData, err := zipnet.SerializeMessage(msg)
-				require.NoError(t, err)
-				w = httptest.NewRecorder()
-				httpReq, err = http.NewRequest("POST", "/server/share", bytes.NewReader(shareData))
-				require.NoError(t, err)
-
-				r.ServeHTTP(w, httpReq)
-				assert.Equal(t, http.StatusOK, w.Code)
-				return nil
-			},
-		},
+		LeaderURL: leaderServer.URL,
 	}
 
 	err = followerServerImpl.RegisterClient(ctx, clientPK1, []byte("test-attestation"))
@@ -93,14 +85,32 @@ func TestServerHandlerGreenPath(t *testing.T) {
 	followerRouter := chi.NewRouter()
 	followerHandler.RegisterRoutes(followerRouter)
 
+	leaderServerData, err := zipnet.SerializeMessage(serverImpl.GetRegistrationBlob())
+	require.NoError(t, err)
+
+	w = httptest.NewRecorder()
+	httpReq, err = http.NewRequest("POST", "/server/register-server", bytes.NewReader(leaderServerData))
+	require.NoError(t, err)
+
+	followerRouter.ServeHTTP(w, httpReq)
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	// Register aggregator with follower server
+	w = httptest.NewRecorder()
+	httpReq, err = http.NewRequest("POST", "/server/register-aggregator", bytes.NewReader(aggData))
+	require.NoError(t, err)
+
+	followerRouter.ServeHTTP(w, httpReq)
+	assert.Equal(t, http.StatusOK, w.Code)
+
 	// Test 3: Publish and retrieve a schedule
-	round := uint64(1)
+	round := zipnet.CurrentRound(serverImpl.config.RoundDuration)
 	scheduleData := make([]byte, 400)
 	_, signature, err := serverImpl.PublishSchedule(ctx, round, scheduleData)
 	require.NoError(t, err)
 
 	w = httptest.NewRecorder()
-	httpReq, err = http.NewRequest("GET", "/server/schedule/1", nil)
+	httpReq, err = http.NewRequest("GET", fmt.Sprintf("/server/schedule/%d", round), nil)
 	require.NoError(t, err)
 
 	r.ServeHTTP(w, httpReq)
@@ -111,7 +121,7 @@ func TestServerHandlerGreenPath(t *testing.T) {
 	assert.Equal(t, scheduleData, schedule.Footprints)
 	assert.Equal(t, signature, schedule.Signature)
 
-	err = followerServerImpl.SetSchedule(context.Background(), 1, schedule.Footprints, schedule.Signature)
+	err = followerHandler.updateSchedule(round)
 	require.NoError(t, err)
 
 	// Test 4: Process an aggregate message
@@ -120,7 +130,7 @@ func TestServerHandlerGreenPath(t *testing.T) {
 	msgSlots := uint32(100)
 	msgVec := createMessageVector(msgSize, msgSlots, 0, msgContent)
 
-	aggregateMsg := &zipnet.AggregatorMessage{
+	aggregateMsg, err := zipnet.NewSigned(aggPriv, &zipnet.AggregatorMessage{
 		ScheduleMessage: zipnet.ScheduleMessage{
 			Round:        round,
 			NextSchedVec: make([]byte, 400),
@@ -131,7 +141,8 @@ func TestServerHandlerGreenPath(t *testing.T) {
 		AggregatorID:    "test-agg",
 		Level:           0,
 		AnytrustGroupID: "test-group",
-	}
+	})
+	require.NoError(t, err)
 
 	aggregateMsgBytes, err := zipnet.SerializeMessage(aggregateMsg)
 	require.NoError(t, err)
@@ -166,12 +177,12 @@ func TestServerHandlerGreenPath(t *testing.T) {
 	require.NoError(t, err)
 
 	// Prepare mock shares for testing server's DeriveRoundOutput
-	shares := []*zipnet.UnblindedShareMessage{followerShare, leaderShare}
+	shares := []*zipnet.UnblindedShareMessage{followerShare.UnsafeObject(), leaderShare.UnsafeObject()}
 	require.Len(t, shares, 2) // TODO: try manually combining the shares
 
 	// Test 5: Retrieve round output
 	w = httptest.NewRecorder()
-	httpReq, err = http.NewRequest("GET", "/server/round-output/1", nil)
+	httpReq, err = http.NewRequest("GET", fmt.Sprintf("/server/round-output/%d", round), nil)
 	require.NoError(t, err)
 
 	r.ServeHTTP(w, httpReq)
@@ -193,19 +204,48 @@ func TestServerHandlerGreenPath(t *testing.T) {
 }
 
 type StubNetworkTransport struct {
-	S map[string]func(*zipnet.UnblindedShareMessage) error
+	LeaderURL string
 }
 
-func (n *StubNetworkTransport) SendToAggregator(ctx context.Context, aggregatorID string, message *zipnet.ClientMessage) error {
+func (n *StubNetworkTransport) SendToAggregator(ctx context.Context, aggregatorID string, message *zipnet.Signed[zipnet.ClientMessage]) error {
 	panic("unexpected call")
 }
 
-func (n *StubNetworkTransport) SendAggregateToServer(ctx context.Context, serverID string, message *zipnet.AggregatorMessage) error {
+func (n *StubNetworkTransport) SendAggregateToAggregator(ctx context.Context, serverID string, message *zipnet.Signed[zipnet.AggregatorMessage]) error {
 	panic("unexpected call")
 }
 
-func (n *StubNetworkTransport) SendShareToServer(ctx context.Context, serverID string, message *zipnet.UnblindedShareMessage) error {
-	return n.S[serverID](message)
+func (n *StubNetworkTransport) SendAggregateToServer(ctx context.Context, serverID string, message *zipnet.Signed[zipnet.AggregatorMessage]) error {
+	panic("unexpected call")
+}
+
+func (n *StubNetworkTransport) SendShareToServer(ctx context.Context, serverID string, message *zipnet.Signed[zipnet.UnblindedShareMessage]) error {
+	msg, err := zipnet.SerializeMessage(message)
+	if err != nil {
+		return err
+	}
+
+	res, err := http.DefaultClient.Post(fmt.Sprintf("%s/server/share", n.LeaderURL), "Application/JSON", bytes.NewBuffer(msg))
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode >= 300 {
+		bodyBytes, _ := io.ReadAll(res.Body)
+		return fmt.Errorf("could not submit share: %s", string(bodyBytes))
+	}
+
+	return nil
+}
+
+func (n *StubNetworkTransport) FetchSchedule(ctx context.Context, serverID string, round uint64) (*zipnet.PublishedSchedule, error) {
+	res, err := http.DefaultClient.Get(fmt.Sprintf("%s/server/schedule/%d", n.LeaderURL, round))
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	return zipnet.DecodeMessage[zipnet.PublishedSchedule](res.Body)
 }
 
 func (n *StubNetworkTransport) BroadcastToClients(ctx context.Context, message *zipnet.ServerMessage) error {

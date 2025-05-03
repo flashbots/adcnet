@@ -50,6 +50,18 @@ type ZIPNetConfig struct {
 	RoundsPerWindow uint32
 }
 
+func CurrentRound(duration time.Duration) uint64 {
+	return uint64(time.Now().UnixMilli() / duration.Milliseconds())
+}
+
+func RoundStart(round uint64, duration time.Duration) time.Time {
+	return time.UnixMilli(int64(round) * duration.Milliseconds())
+}
+
+func RoundOffset(round uint64, duration time.Duration, offset time.Duration) time.Time {
+	return time.UnixMilli(int64(round)*duration.Milliseconds() + offset.Milliseconds())
+}
+
 // PublishedSchedule represents a schedule published by the leader server
 // at the end of each round. It contains footprints indicating which slots
 // are reserved for the next round.
@@ -117,7 +129,7 @@ type Client interface {
 	//
 	// Returns the prepared message or an error if preparation fails.
 	SubmitMessage(ctx context.Context, round uint64, msg []byte,
-		requestSlot bool, publishedSchedule PublishedSchedule) (*ClientMessage, error)
+		requestSlot bool, publishedSchedule PublishedSchedule) (*Signed[ClientMessage], error)
 
 	// SendCoverTraffic prepares and sends cover traffic (an empty message) for
 	// the current round to maintain anonymity.
@@ -168,7 +180,7 @@ type Client interface {
 	// - broadcast: The broadcast message from the server
 	//
 	// Returns the processed message data or an error if processing fails.
-	ProcessBroadcast(ctx context.Context, round uint64, broadcast ServerMessage) ([]byte, error)
+	ProcessBroadcast(ctx context.Context, round uint64, broadcast Signed[RoundOutput]) ([]byte, error)
 
 	// GetTimesParticipated returns the number of times this client has
 	// participated in the current window. This is used for rate limiting.
@@ -206,8 +218,7 @@ type Aggregator interface {
 	// - clientPK: The client's public key for verification
 	//
 	// Returns an error if the message is invalid or processing fails.
-	ReceiveClientMessage(ctx context.Context, message *ClientMessage,
-		clientPK crypto.PublicKey) error
+	ReceiveClientMessage(ctx context.Context, message *Signed[ClientMessage]) error
 
 	// ReceiveAggregatorMessage processes a message from another aggregator,
 	// verifying its validity and preparing it for aggregation.
@@ -222,7 +233,7 @@ type Aggregator interface {
 	// - message: The aggregated message from another aggregator
 	//
 	// Returns an error if the message is invalid or processing fails.
-	ReceiveAggregatorMessage(ctx context.Context, message *AggregatorMessage) error
+	ReceiveAggregatorMessage(ctx context.Context, message *Signed[AggregatorMessage]) error
 
 	// AggregateMessages combines all received messages for the current round
 	// and returns the aggregated message to be sent upstream.
@@ -235,7 +246,7 @@ type Aggregator interface {
 	// - round: Current protocol round number
 	//
 	// Returns the aggregated message or an error if aggregation fails.
-	AggregateMessages(ctx context.Context, round uint64) (*AggregatorMessage, error)
+	AggregateMessages(ctx context.Context, round uint64) (*Signed[AggregatorMessage], error)
 
 	// Reset prepares the aggregator for the next round by clearing state
 	// from the previous round.
@@ -315,7 +326,7 @@ type Server interface {
 	// - aggregate: The aggregated message containing client ciphertexts
 	//
 	// Returns the unblinded share and an error if unblinding fails.
-	UnblindAggregate(ctx context.Context, aggregate *AggregatorMessage) (*UnblindedShareMessage, error)
+	UnblindAggregate(ctx context.Context, aggregate *Signed[AggregatorMessage]) (*Signed[UnblindedShareMessage], error)
 
 	// DeriveRoundOutput combines unblinded shares from all anytrust servers
 	// to produce the final broadcast message.
@@ -455,7 +466,7 @@ type CryptoProvider interface {
 	//
 	// Returns two derived keys (for schedule vector and message vector) and an error if derivation fails.
 	KDF(masterKey crypto.SharedKey, round uint64,
-		publishedSchedule []byte) ([]byte, []byte, error)
+		publishedSchedule []byte, schedLen, msgVecLen int) ([]byte, []byte, error)
 
 	// Sign signs data with a private key.
 	//
@@ -522,7 +533,9 @@ type NetworkTransport interface {
 	//
 	// Returns an error if sending fails.
 	SendToAggregator(ctx context.Context, aggregatorID string,
-		message *ClientMessage) error
+		message *Signed[ClientMessage]) error
+	SendAggregateToAggregator(ctx context.Context, aggregatorID string,
+		message *Signed[AggregatorMessage]) error
 
 	// SendToServer sends a message to a server.
 	//
@@ -535,10 +548,12 @@ type NetworkTransport interface {
 	//
 	// Returns an error if sending fails.
 	SendShareToServer(ctx context.Context, serverID string,
-		message *UnblindedShareMessage) error
+		message *Signed[UnblindedShareMessage]) error
 
 	SendAggregateToServer(ctx context.Context, serverID string,
-		message *AggregatorMessage) error
+		message *Signed[AggregatorMessage]) error
+
+	FetchSchedule(ctx context.Context, serverID string, round uint64) (*PublishedSchedule, error)
 
 	// BroadcastToClients broadcasts a message to all clients.
 	//

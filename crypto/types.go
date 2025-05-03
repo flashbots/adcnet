@@ -9,6 +9,8 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+
+	"crypto/hkdf"
 )
 
 // Hash represents a cryptographic hash value using SHA-256 (32 bytes).
@@ -56,6 +58,15 @@ func NewPublicKeyFromBytes(data []byte) PublicKey {
 	return PublicKey(pk)
 }
 
+func NewPublicKeyFromString(data string) (PublicKey, error) {
+	rawBytes, err := hex.DecodeString(data)
+	if err != nil {
+		return PublicKey{}, err
+	}
+
+	return NewPublicKeyFromBytes(rawBytes), nil
+}
+
 // Bytes returns the public key as a byte slice.
 // This is useful when the key needs to be serialized or used in cryptographic operations.
 func (pk PublicKey) Bytes() []byte {
@@ -71,7 +82,7 @@ func (pk PublicKey) Equal(other PublicKey) bool {
 // String returns a base64-encoded string representation of the public key.
 // This is useful for logging, displaying to users, and using as a map key.
 func (pk PublicKey) String() string {
-	return base64.StdEncoding.EncodeToString(pk)
+	return hex.EncodeToString(pk)
 }
 
 // PrivateKey represents a private key used for signing and key exchange.
@@ -131,7 +142,7 @@ func NewSignature(data []byte) Signature {
 // Bytes returns the signature as a byte slice.
 // This is useful when the signature needs to be serialized or transmitted.
 func (s Signature) Bytes() []byte {
-	return s
+	return []byte(s)
 }
 
 // Verify checks if this signature is valid for the given data and public key.
@@ -144,7 +155,7 @@ func (s Signature) Verify(publicKey PublicKey, data []byte) bool {
 // String returns a base64-encoded string representation of the signature.
 // This is useful for logging and debugging.
 func (s Signature) String() string {
-	return base64.StdEncoding.EncodeToString(s)
+	return hex.EncodeToString(s.Bytes())
 }
 
 // Sign signs data with the given private key using Ed25519.
@@ -303,7 +314,7 @@ func (p *StandardCryptoProvider) DeriveSharedSecret(privateKey PrivateKey, other
 // - publishedScheduleFootprints: The published schedule for this round
 //
 // Returns two derived keys (for schedule and message vectors) and any error.
-func (p *StandardCryptoProvider) KDF(masterKey SharedKey, round uint64, publishedScheduleFootprints []byte) ([]byte, []byte, error) {
+func (p *StandardCryptoProvider) KDF(masterKey SharedKey, round uint64, publishedScheduleFootprints []byte, schedPadLength, msgVecPadLength int) ([]byte, []byte, error) {
 	roundBytes := make([]byte, 8)
 	for i := 0; i < 8; i++ {
 		roundBytes[i] = byte(round >> uint(i*8))
@@ -317,7 +328,17 @@ func (p *StandardCryptoProvider) KDF(masterKey SharedKey, round uint64, publishe
 	msgInput := append(masterKey.Bytes(), append([]byte("msg"), append(roundBytes, publishedScheduleFootprints...)...)...)
 	msgHash := sha256.Sum256(msgInput)
 
-	return schedHash[:], msgHash[:], nil
+	schedPad, err := hkdf.Key(sha256.New, schedHash[:], nil, "", schedPadLength)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	msgPad, err := hkdf.Key(sha256.New, msgHash[:], nil, "", schedPadLength)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return schedPad, msgPad, nil
 }
 
 // Sign signs data with a private key using Ed25519.

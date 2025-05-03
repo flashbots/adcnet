@@ -2,10 +2,58 @@ package zipnet
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 
 	"github.com/ruteri/go-zipnet/crypto"
 )
+
+type Signed[T any] struct {
+	PublicKey crypto.PublicKey `json:"public_key"`
+	Signature crypto.Signature `json:"signature"`
+	Object    *T               `json:"object"`
+}
+
+func NewSigned[T any](privkey crypto.PrivateKey, obj *T) (*Signed[T], error) {
+	pubkey, err := privkey.PublicKey()
+	if err != nil {
+		return nil, err
+	}
+
+	serializedData, err := SerializeMessage(obj)
+	if err != nil {
+		return nil, err
+	}
+
+	signature, err := crypto.Sign(privkey, append(serializedData, pubkey...))
+	if err != nil {
+		return nil, err
+	}
+
+	return &Signed[T]{
+		PublicKey: pubkey,
+		Signature: signature,
+		Object:    obj,
+	}, nil
+}
+
+func (s *Signed[T]) UnsafeObject() *T {
+	return s.Object
+}
+
+func (s *Signed[T]) Recover() (*T, crypto.PublicKey, error) {
+	serializedData, err := SerializeMessage(s.Object)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	ok := s.Signature.Verify(s.PublicKey, append(serializedData, s.PublicKey...))
+	if !ok {
+		return nil, nil, errors.New("siganture not valid")
+	}
+
+	return s.Object, s.PublicKey, nil
+}
 
 // ScheduleMessage represents a ZIPNet protocol message containing broadcast data,
 // scheduling information, and authentication metadata.
@@ -72,42 +120,11 @@ type AggregatorMessage struct {
 type UnblindedShareMessage struct {
 	// EncryptedMsg is the original aggregated message
 	// This is retained to ensure all servers are working on the same input
-	EncryptedMsg *AggregatorMessage `json:"encrypted_msg"`
+	EncryptedMsg *Signed[AggregatorMessage] `json:"encrypted_msg"`
 
 	// KeyShare contains the partial decryption (the XOR of derived pads)
 	// This is combined with shares from other servers to obtain the plaintext
 	KeyShare *ScheduleMessage `json:"key_share"`
-
-	// Signature authenticates this share
-	// This prevents tampering with the share before it reaches the leader
-	Signature crypto.Signature `json:"signature"`
-
-	// ServerPublicKey identifies the server that created this share
-	// This is used to verify the signature and track which servers have contributed
-	ServerPublicKey crypto.PublicKey `json:"server_public_key"`
-}
-
-func (m *UnblindedShareMessage) Sign(c CryptoProvider, pk crypto.PrivateKey) (*UnblindedShareMessage, error) {
-	mCopy := *m
-	mCopy.Signature = nil
-	data, err := SerializeMessage(&mCopy)
-	if err != nil {
-		return nil, err
-	}
-
-	mCopy.Signature, err = c.Sign(pk, data)
-	return &mCopy, err
-}
-
-func (m *UnblindedShareMessage) Verify(c CryptoProvider) error {
-	mCopy := *m
-	mCopy.Signature = nil
-	data, err := SerializeMessage(&mCopy)
-	if err != nil {
-		return err
-	}
-
-	return c.Verify(m.ServerPublicKey, data, m.Signature)
 }
 
 // RoundOutput represents the final output of a round after combining all
@@ -115,18 +132,7 @@ func (m *UnblindedShareMessage) Verify(c CryptoProvider) error {
 //
 // This is created by the leader server and contains the final broadcast
 // message along with signatures from all participating servers.
-type RoundOutput struct {
-	// Round is the protocol round number
-	Round uint64 `json:"round"`
-
-	// Message is the unblinded broadcast content
-	// This contains both the message vector and the scheduling vector
-	Message *ScheduleMessage `json:"message"`
-
-	// ServerSignatures contains signatures from participating servers
-	// These verify that the output was correctly computed from their shares
-	ServerSignatures []OutputSignature `json:"server_signatures"`
-}
+type RoundOutput = ScheduleMessage
 
 // OutputSignature pairs a server's public key with its signature on the round output.
 // This is used to verify that the server approved the final output.

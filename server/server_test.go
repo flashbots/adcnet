@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -14,6 +15,7 @@ import (
 // Helper function to create test servers
 func setupTestServer(t *testing.T, isLeader bool) *ServerImpl {
 	config := &zipnet.ZIPNetConfig{
+		RoundDuration:   time.Second,
 		MessageSlots:    100,
 		MessageSize:     160,
 		SchedulingSlots: 400,
@@ -26,6 +28,20 @@ func setupTestServer(t *testing.T, isLeader bool) *ServerImpl {
 	require.NotNil(t, server)
 
 	return server
+}
+
+func registerAggregator(t *testing.T, s *ServerImpl) crypto.PrivateKey {
+	aggPK, aggPrivk, err := crypto.GenerateKeyPair()
+	require.NoError(t, err)
+
+	aggBlob := &zipnet.AggregatorRegistrationBlob{
+		PublicKey: aggPK,
+		Level:     0,
+	}
+
+	err = s.RegisterAggregator(context.TODO(), aggBlob)
+	require.NoError(t, err)
+	return aggPrivk
 }
 
 // Helper to generate test client data
@@ -129,8 +145,10 @@ func TestAnytrustMinClients(t *testing.T) {
 	ctx := context.Background()
 	server := setupTestServer(t, false)
 
+	aggPrivkey := registerAggregator(t, server)
+
 	// Create a test schedule
-	round := uint64(1)
+	round := zipnet.CurrentRound(server.config.RoundDuration)
 	scheduleData := make([]byte, 400)
 	server.schedules[round] = scheduleData
 
@@ -138,7 +156,7 @@ func TestAnytrustMinClients(t *testing.T) {
 	clientKeys := registerTestClients(t, server, 1)
 
 	// Create an aggregate message with insufficient clients
-	aggregateMsg := &zipnet.AggregatorMessage{
+	aggregateMsg, err := zipnet.NewSigned(aggPrivkey, &zipnet.AggregatorMessage{
 		ScheduleMessage: zipnet.ScheduleMessage{
 			Round:        round,
 			NextSchedVec: make([]byte, 400),
@@ -147,16 +165,26 @@ func TestAnytrustMinClients(t *testing.T) {
 		UserPKs:      clientKeys,
 		AggregatorID: "test-agg",
 		Level:        0,
-	}
+	})
+	require.NoError(t, err)
 
 	// Should fail due to not enough clients
-	_, err := server.UnblindAggregate(ctx, aggregateMsg)
+	_, err = server.UnblindAggregate(ctx, aggregateMsg)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "not enough clients")
 
 	// Register one more client to meet minimum
-	clientKeys = append(clientKeys, registerTestClients(t, server, 1)...)
-	aggregateMsg.UserPKs = clientKeys
+	aggregateMsg, err = zipnet.NewSigned(aggPrivkey, &zipnet.AggregatorMessage{
+		ScheduleMessage: zipnet.ScheduleMessage{
+			Round:        round,
+			NextSchedVec: make([]byte, 400),
+			MsgVec:       make([]byte, 16000),
+		},
+		UserPKs:      append(clientKeys, registerTestClients(t, server, 1)...),
+		AggregatorID: "test-agg",
+		Level:        0,
+	})
+	require.NoError(t, err)
 
 	// Should now succeed
 	_, err = server.UnblindAggregate(ctx, aggregateMsg)
@@ -167,6 +195,7 @@ func TestAnytrustMinClients(t *testing.T) {
 func TestUnblindAggregate(t *testing.T) {
 	ctx := context.Background()
 	server := setupTestServer(t, false)
+	aggPrivkey := registerAggregator(t, server)
 
 	// Create a test schedule
 	round := uint64(1)
@@ -181,7 +210,7 @@ func TestUnblindAggregate(t *testing.T) {
 	msgVec := createMessageVector(server.config.MessageSize, 100, 0, msgContent)
 
 	// Create an aggregate message
-	aggregateMsg := &zipnet.AggregatorMessage{
+	aggregateMsg, err := zipnet.NewSigned(aggPrivkey, &zipnet.AggregatorMessage{
 		ScheduleMessage: zipnet.ScheduleMessage{
 			Round:        round,
 			NextSchedVec: make([]byte, 400),
@@ -190,24 +219,27 @@ func TestUnblindAggregate(t *testing.T) {
 		UserPKs:      clientKeys,
 		AggregatorID: "test-agg",
 		Level:        0,
-	}
+	})
+	require.NoError(t, err)
 
 	// Get unblinded share
-	share, err := server.UnblindAggregate(ctx, aggregateMsg)
+	signedShare, err := server.UnblindAggregate(ctx, aggregateMsg)
 	require.NoError(t, err)
-	require.NotNil(t, share)
-	require.Equal(t, server.publicKey, share.ServerPublicKey)
+
+	share, signer, err := signedShare.Recover()
+	require.Equal(t, server.publicKey, signer)
 	require.Equal(t, round, share.KeyShare.Round)
 
 	// Check key share has expected dimensions
-	require.Equal(t, len(aggregateMsg.NextSchedVec), len(share.KeyShare.NextSchedVec))
-	require.Equal(t, len(aggregateMsg.MsgVec), len(share.KeyShare.MsgVec))
+	require.Equal(t, 400, len(share.KeyShare.NextSchedVec))
+	require.Equal(t, len(msgVec), len(share.KeyShare.MsgVec))
 }
 
 // Test 4: Key ratcheting for forward secrecy
 func TestKeyRatcheting(t *testing.T) {
 	ctx := context.Background()
 	server := setupTestServer(t, false)
+	aggPrivkey := registerAggregator(t, server)
 
 	// Register 2 clients (to meet minimum client requirement)
 	clientKeys := registerTestClients(t, server, 2)
@@ -222,7 +254,7 @@ func TestKeyRatcheting(t *testing.T) {
 	server.schedules[round] = scheduleData
 
 	// Create a dummy aggregate to trigger ratcheting
-	aggregateMsg := &zipnet.AggregatorMessage{
+	aggregateMsg, err := zipnet.NewSigned(aggPrivkey, &zipnet.AggregatorMessage{
 		ScheduleMessage: zipnet.ScheduleMessage{
 			Round:        round,
 			NextSchedVec: make([]byte, 400),
@@ -231,10 +263,11 @@ func TestKeyRatcheting(t *testing.T) {
 		UserPKs:      clientKeys, // Include both clients to meet minimum
 		AggregatorID: "test-agg",
 		Level:        0,
-	}
+	})
+	require.NoError(t, err)
 
 	// Process the aggregate (this should ratchet the key)
-	_, err := server.UnblindAggregate(ctx, aggregateMsg)
+	_, err = server.UnblindAggregate(ctx, aggregateMsg)
 	require.NoError(t, err)
 
 	// Verify key was ratcheted
@@ -252,6 +285,14 @@ func TestLeaderFollowerRoles(t *testing.T) {
 	leaderServer := setupTestServer(t, true)
 	followerServer := setupTestServer(t, false)
 
+	aggPrivkey := registerAggregator(t, leaderServer)
+	aggPubkey, err := aggPrivkey.PublicKey()
+	require.NoError(t, err)
+	followerServer.RegisterAggregator(context.Background(), &zipnet.AggregatorRegistrationBlob{
+		PublicKey: aggPubkey,
+		Level:     0,
+	})
+
 	// Register the same clients with both servers
 	clientKeys := registerSameClients(t, []*ServerImpl{leaderServer, followerServer}, 2)
 
@@ -263,7 +304,7 @@ func TestLeaderFollowerRoles(t *testing.T) {
 	followerServer.schedules[round] = scheduleData
 
 	// Create test aggregate message
-	aggregateMsg := &zipnet.AggregatorMessage{
+	aggregateMsg, err := zipnet.NewSigned(aggPrivkey, &zipnet.AggregatorMessage{
 		ScheduleMessage: zipnet.ScheduleMessage{
 			Round:        round,
 			NextSchedVec: make([]byte, 400),
@@ -272,7 +313,8 @@ func TestLeaderFollowerRoles(t *testing.T) {
 		UserPKs:      clientKeys,
 		AggregatorID: "test-agg",
 		Level:        0,
-	}
+	})
+	require.NoError(t, err)
 
 	// Test that only leader can derive round output
 	leaderShare, err := leaderServer.UnblindAggregate(ctx, aggregateMsg)
@@ -285,9 +327,8 @@ func TestLeaderFollowerRoles(t *testing.T) {
 	leaderServer.anytrustGroupSize = 2
 
 	// Both shares must use the same encrypted message object
-	followerShare.EncryptedMsg = leaderShare.EncryptedMsg
-
-	shares := []*zipnet.UnblindedShareMessage{leaderShare, followerShare}
+	// followerShare.EncryptedMsg = leaderShare.EncryptedMsg
+	shares := []*zipnet.UnblindedShareMessage{leaderShare.UnsafeObject(), followerShare.UnsafeObject()}
 	output, err := leaderServer.DeriveRoundOutput(ctx, shares)
 	require.NoError(t, err)
 	require.NotNil(t, output)
@@ -305,6 +346,7 @@ func TestCombiningUnblindedShares(t *testing.T) {
 	// Create leader server
 	leaderServer := setupTestServer(t, true)
 	leaderServer.anytrustGroupSize = 3 // Leader + 2 followers
+	aggPrivkey := registerAggregator(t, leaderServer)
 
 	// Create a test schedule
 	round := uint64(1)
@@ -316,7 +358,7 @@ func TestCombiningUnblindedShares(t *testing.T) {
 	msgSlot := uint32(0)
 
 	// Create encrypted message - in a real system this would be XOR'd with pads from all servers
-	encryptedMsg := &zipnet.AggregatorMessage{
+	encryptedMsg, err := zipnet.NewSigned(aggPrivkey, &zipnet.AggregatorMessage{
 		ScheduleMessage: zipnet.ScheduleMessage{
 			Round:        round,
 			NextSchedVec: make([]byte, 400),
@@ -325,7 +367,8 @@ func TestCombiningUnblindedShares(t *testing.T) {
 		UserPKs:      []crypto.PublicKey{}, // Not relevant for this test
 		AggregatorID: "test-agg",
 		Level:        0,
-	}
+	})
+	require.NoError(t, err)
 
 	// Create key shares - in a real system these would be derived from shared secrets
 	// For this test, all zeros (since our message is already in the clear)
@@ -348,30 +391,30 @@ func TestCombiningUnblindedShares(t *testing.T) {
 	}
 
 	// Create unblinded shares from all servers
-	server1PK, _, _ := crypto.GenerateKeyPair()
-	server2PK, _, _ := crypto.GenerateKeyPair()
-	server3PK, _, _ := crypto.GenerateKeyPair()
+	_, server1Key, _ := crypto.GenerateKeyPair()
+	_, server2Key, _ := crypto.GenerateKeyPair()
+	_, server3Key, _ := crypto.GenerateKeyPair()
 
-	share1 := &zipnet.UnblindedShareMessage{
-		EncryptedMsg:    encryptedMsg,
-		KeyShare:        keyShare1,
-		ServerPublicKey: server1PK,
-	}
+	share1, err := zipnet.NewSigned(server1Key, &zipnet.UnblindedShareMessage{
+		EncryptedMsg: encryptedMsg,
+		KeyShare:     keyShare1,
+	})
+	require.NoError(t, err)
 
-	share2 := &zipnet.UnblindedShareMessage{
-		EncryptedMsg:    encryptedMsg,
-		KeyShare:        keyShare2,
-		ServerPublicKey: server2PK,
-	}
+	share2, err := zipnet.NewSigned(server2Key, &zipnet.UnblindedShareMessage{
+		EncryptedMsg: encryptedMsg,
+		KeyShare:     keyShare2,
+	})
+	require.NoError(t, err)
 
-	share3 := &zipnet.UnblindedShareMessage{
-		EncryptedMsg:    encryptedMsg,
-		KeyShare:        keyShare3,
-		ServerPublicKey: server3PK,
-	}
+	share3, err := zipnet.NewSigned(server3Key, &zipnet.UnblindedShareMessage{
+		EncryptedMsg: encryptedMsg,
+		KeyShare:     keyShare3,
+	})
+	require.NoError(t, err)
 
 	// Combine shares
-	shares := []*zipnet.UnblindedShareMessage{share1, share2, share3}
+	shares := []*zipnet.UnblindedShareMessage{share1.UnsafeObject(), share2.UnsafeObject(), share3.UnsafeObject()}
 	output, err := leaderServer.DeriveRoundOutput(ctx, shares)
 	require.NoError(t, err)
 
@@ -388,6 +431,7 @@ func TestAnytrustAnonymity(t *testing.T) {
 	// Create honest server (leader)
 	honestServer := setupTestServer(t, true)
 	honestServer.anytrustGroupSize = 3 // One honest + two compromised
+	aggPrivkey := registerAggregator(t, honestServer)
 
 	// Register two clients
 	client1PK, _, _ := crypto.GenerateKeyPair()
@@ -428,7 +472,7 @@ func TestAnytrustAnonymity(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create the aggregate message
-	aggMsg1 := &zipnet.AggregatorMessage{
+	aggMsg1, err := zipnet.NewSigned(aggPrivkey, &zipnet.AggregatorMessage{
 		ScheduleMessage: zipnet.ScheduleMessage{
 			Round:        round,
 			NextSchedVec: make([]byte, 400),
@@ -437,7 +481,8 @@ func TestAnytrustAnonymity(t *testing.T) {
 		UserPKs:      []crypto.PublicKey{client1PK, client2PK},
 		AggregatorID: "test-agg",
 		Level:        0,
-	}
+	})
+	require.NoError(t, err)
 
 	// Case 2: Client 1 sends message 2, Client 2 sends message 1 (swapped)
 	// Create the expected final output for Case 2
@@ -451,7 +496,7 @@ func TestAnytrustAnonymity(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create the second aggregate message
-	aggMsg2 := &zipnet.AggregatorMessage{
+	aggMsg2, err := zipnet.NewSigned(aggPrivkey, &zipnet.AggregatorMessage{
 		ScheduleMessage: zipnet.ScheduleMessage{
 			Round:        round,
 			NextSchedVec: make([]byte, 400),
@@ -460,12 +505,12 @@ func TestAnytrustAnonymity(t *testing.T) {
 		UserPKs:      []crypto.PublicKey{client1PK, client2PK},
 		AggregatorID: "test-agg",
 		Level:        0,
-	}
+	})
+	require.NoError(t, err)
 
 	// Create public keys for all three servers
-	honestServerPK := honestServer.publicKey
-	compromisedPK1, _, _ := crypto.GenerateKeyPair()
-	compromisedPK2, _, _ := crypto.GenerateKeyPair()
+	_, compromisedKey1, _ := crypto.GenerateKeyPair()
+	_, compromisedKey2, _ := crypto.GenerateKeyPair()
 
 	// Create KeyShare for honest server for case 1
 	// We need to compute what the honest server must contribute to get the final result
@@ -481,82 +526,77 @@ func TestAnytrustAnonymity(t *testing.T) {
 	}
 
 	// Create unblinded share from honest server for case 1
-	honestShare1 := &zipnet.UnblindedShareMessage{
-		EncryptedMsg:    aggMsg1,
-		KeyShare:        honestKeyShare1,
-		ServerPublicKey: honestServerPK,
-		Signature:       crypto.NewSignature([]byte("honest-sig-1")),
-	}
+	honestShare1, err := zipnet.NewSigned(honestServer.signingKey, &zipnet.UnblindedShareMessage{
+		EncryptedMsg: aggMsg1,
+		KeyShare:     honestKeyShare1,
+	})
+	require.NoError(t, err)
 
 	// Create KeyShare for honest server for case 2
-	honestKeyShare2 := &zipnet.ScheduleMessage{
+	honestKeyShare2, err := zipnet.NewSigned(honestServer.signingKey, &zipnet.ScheduleMessage{
 		Round:        round,
 		NextSchedVec: make([]byte, 400),
 		MsgVec:       make([]byte, len(encryptedMsgVec2)),
-	}
+	})
+	require.NoError(t, err)
 
 	// XOR with encrypted message to determine what we need to add for case 2
 	for i := 0; i < len(encryptedMsgVec2); i++ {
-		honestKeyShare2.MsgVec[i] = encryptedMsgVec2[i] ^ finalMsgVec2[i]
+		honestKeyShare2.UnsafeObject().MsgVec[i] = encryptedMsgVec2[i] ^ finalMsgVec2[i]
 	}
 
 	// Create unblinded share from honest server for case 2
-	honestShare2 := &zipnet.UnblindedShareMessage{
-		EncryptedMsg:    aggMsg2,
-		KeyShare:        honestKeyShare2,
-		ServerPublicKey: honestServerPK,
-		Signature:       crypto.NewSignature([]byte("honest-sig-2")),
-	}
+	honestShare2, err := zipnet.NewSigned(honestServer.signingKey, &zipnet.UnblindedShareMessage{
+		EncryptedMsg: aggMsg2,
+		KeyShare:     honestKeyShare2.UnsafeObject(),
+	})
+	require.NoError(t, err)
 
 	// Create compromised server shares (zero contribution for simplicity)
 	// These could be anything - they won't affect the anonymity property
-	compShare1A := &zipnet.UnblindedShareMessage{
+	compShare1A, err := zipnet.NewSigned(compromisedKey1, &zipnet.UnblindedShareMessage{
 		EncryptedMsg: aggMsg1,
 		KeyShare: &zipnet.ScheduleMessage{
 			Round:        round,
 			NextSchedVec: make([]byte, 400),
 			MsgVec:       make([]byte, len(encryptedMsgVec1)),
 		},
-		ServerPublicKey: compromisedPK1,
-		Signature:       crypto.NewSignature([]byte("comp1-sig-A")),
-	}
+	})
+	require.NoError(t, err)
 
-	compShare2A := &zipnet.UnblindedShareMessage{
+	compShare2A, err := zipnet.NewSigned(compromisedKey2, &zipnet.UnblindedShareMessage{
 		EncryptedMsg: aggMsg1,
 		KeyShare: &zipnet.ScheduleMessage{
 			Round:        round,
 			NextSchedVec: make([]byte, 400),
 			MsgVec:       make([]byte, len(encryptedMsgVec1)),
 		},
-		ServerPublicKey: compromisedPK2,
-		Signature:       crypto.NewSignature([]byte("comp2-sig-A")),
-	}
+	})
+	require.NoError(t, err)
 
-	compShare1B := &zipnet.UnblindedShareMessage{
+	compShare1B, err := zipnet.NewSigned(compromisedKey1, &zipnet.UnblindedShareMessage{
 		EncryptedMsg: aggMsg2,
 		KeyShare: &zipnet.ScheduleMessage{
 			Round:        round,
 			NextSchedVec: make([]byte, 400),
 			MsgVec:       make([]byte, len(encryptedMsgVec2)),
 		},
-		ServerPublicKey: compromisedPK1,
-		Signature:       crypto.NewSignature([]byte("comp1-sig-B")),
-	}
+	})
+	require.NoError(t, err)
 
-	compShare2B := &zipnet.UnblindedShareMessage{
+	compShare2B, err := zipnet.NewSigned(compromisedKey2, &zipnet.UnblindedShareMessage{
 		EncryptedMsg: aggMsg2,
 		KeyShare: &zipnet.ScheduleMessage{
 			Round:        round,
 			NextSchedVec: make([]byte, 400),
 			MsgVec:       make([]byte, len(encryptedMsgVec2)),
 		},
-		ServerPublicKey: compromisedPK2,
-		Signature:       crypto.NewSignature([]byte("comp2-sig-B")),
-	}
+	})
+	require.NoError(t, err)
 
 	// Derive outputs for both cases
-	sharesA := []*zipnet.UnblindedShareMessage{honestShare1, compShare1A, compShare2A}
-	sharesB := []*zipnet.UnblindedShareMessage{honestShare2, compShare1B, compShare2B}
+	sharesA := []*zipnet.UnblindedShareMessage{honestShare1.UnsafeObject(), compShare1A.UnsafeObject(), compShare2A.UnsafeObject()}
+	sharesB := []*zipnet.UnblindedShareMessage{honestShare2.UnsafeObject(), compShare1B.UnsafeObject(), compShare2B.UnsafeObject()}
 
 	outputA, err := honestServer.DeriveRoundOutput(ctx, sharesA)
 	require.NoError(t, err)

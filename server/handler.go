@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -30,8 +31,7 @@ type ServerHandler struct {
 	// also this should consider anytrust group id!
 	mutex        sync.Mutex
 	servers      map[string]zipnet.ServerRegistrationBlob
-	curRound     uint64
-	roundOutputs map[uint64]*zipnet.RoundOutput
+	roundOutputs map[uint64]*zipnet.Signed[zipnet.RoundOutput]
 	shares       map[uint64]map[string]*zipnet.UnblindedShareMessage
 }
 
@@ -44,8 +44,7 @@ func NewServerHandler(Server *ServerImpl, transport zipnet.NetworkTransport) *Se
 		cancelFunc:   cancel,
 		running:      false,
 		servers:      make(map[string]zipnet.ServerRegistrationBlob),
-		curRound:     0,
-		roundOutputs: make(map[uint64]*zipnet.RoundOutput),
+		roundOutputs: make(map[uint64]*zipnet.Signed[zipnet.RoundOutput]),
 		shares:       make(map[uint64]map[string]*zipnet.UnblindedShareMessage),
 	}
 }
@@ -226,54 +225,59 @@ func (h *ServerHandler) schedule(w http.ResponseWriter, r *http.Request) {
 
 func (h *ServerHandler) share(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
-	shareMsg, err := zipnet.DecodeMessage[zipnet.UnblindedShareMessage](r.Body)
+	signedShareMsg, err := zipnet.DecodeMessage[zipnet.Signed[zipnet.UnblindedShareMessage]](r.Body)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to parse aggregator message: %v", err), http.StatusBadRequest)
+		http.Error(w, fmt.Sprintf("Failed to parse share message: %v", err), http.StatusBadRequest)
 		return
+	}
+
+	_, statusCode, err := h.processShare(r.Context(), signedShareMsg)
+	if err != nil {
+		http.Error(w, err.Error(), statusCode)
+		return
+	}
+	w.WriteHeader(statusCode)
+}
+
+func (h *ServerHandler) processShare(ctx context.Context, signedShareMsg *zipnet.Signed[zipnet.UnblindedShareMessage]) (*zipnet.Signed[zipnet.RoundOutput], int, error) {
+	shareMsg, srvSigner, err := signedShareMsg.Recover()
+	if err != nil {
+		return nil, http.StatusUnauthorized, fmt.Errorf("could not recover server signature: %w", err)
+	}
+
+	aggMessage, aggSigner, err := shareMsg.EncryptedMsg.Recover()
+	if err != nil {
+		return nil, http.StatusUnauthorized, fmt.Errorf("could not recover aggregator signature: %w", err)
 	}
 
 	h.mutex.Lock()
 	defer h.mutex.Unlock()
 
-	if _, serverFound := h.servers[shareMsg.ServerPublicKey.String()]; !serverFound {
-		http.Error(w, "server not whitelisted", http.StatusUnauthorized)
-		return
-	}
-
-	if err = shareMsg.Verify(h.impl.cryptoProvider); err != nil {
-		http.Error(w, "signature invalid", http.StatusUnauthorized)
-		return
-	}
-
-	cachedRoundOutput, roundAlreadyProcessed := h.roundOutputs[shareMsg.EncryptedMsg.Round]
-	if roundAlreadyProcessed {
-		w.WriteHeader(http.StatusAlreadyReported)
-		w.Header().Set("Content-Type", "application/json")
-		responseData, err := zipnet.SerializeMessage(cachedRoundOutput)
-		if err != nil {
-			http.Error(w, fmt.Sprintf("Failed to serialize response: %v", err), http.StatusInternalServerError)
-			return
+	if !srvSigner.Equal(h.impl.publicKey) {
+		if _, serverFound := h.servers[srvSigner.String()]; !serverFound {
+			return nil, http.StatusUnauthorized, fmt.Errorf("non-whitelisted server %s", srvSigner.String())
 		}
-
-		w.Write(responseData)
-		return
 	}
 
-	if h.curRound == 0 {
-		// Assume valid (TODO)
-		h.curRound = shareMsg.EncryptedMsg.Round
+	if _, found := h.impl.regAggregators[aggSigner.String()]; !found {
+		return nil, http.StatusUnauthorized, fmt.Errorf("non-whitelisted aggregator %s", aggSigner.String())
 	}
 
-	if shareMsg.EncryptedMsg.Round+1000 < h.curRound || shareMsg.EncryptedMsg.Round > h.curRound {
-		http.Error(w, "round out of bounds", http.StatusBadRequest)
-		return
+	cachedRoundOutput, roundAlreadyProcessed := h.roundOutputs[aggMessage.Round]
+	if roundAlreadyProcessed {
+		return cachedRoundOutput, http.StatusAlreadyReported, nil
 	}
 
-	_, roundFound := h.shares[shareMsg.EncryptedMsg.Round]
+	var currentRound uint64 = zipnet.CurrentRound(h.impl.config.RoundDuration)
+	if aggMessage.Round+1000 < currentRound || aggMessage.Round > currentRound {
+		return nil, http.StatusBadRequest, fmt.Errorf("round %d out of bounds, current round %d", aggMessage.Round, currentRound)
+	}
+
+	_, roundFound := h.shares[aggMessage.Round]
 	if !roundFound {
 		if len(h.shares) > 1000 {
 			for round := range h.shares {
-				if len(h.shares) < 1000 || round+1000 >= shareMsg.EncryptedMsg.Round {
+				if len(h.shares) < 1000 || round+1000 >= aggMessage.Round {
 					break
 				} else {
 					delete(h.shares, round)
@@ -281,61 +285,41 @@ func (h *ServerHandler) share(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		h.shares[shareMsg.EncryptedMsg.Round] = make(map[string]*zipnet.UnblindedShareMessage)
+		h.shares[aggMessage.Round] = make(map[string]*zipnet.UnblindedShareMessage)
 		leaderShare, err := h.impl.UnblindAggregate(context.Background(), shareMsg.EncryptedMsg)
 		if err != nil {
-			http.Error(w, fmt.Errorf("Leader could not unblind for round: %w", err).Error(), http.StatusInternalServerError)
-			return
+			return nil, http.StatusInternalServerError, fmt.Errorf("leader could not unblind for round: %w", err)
 		}
-		h.shares[shareMsg.EncryptedMsg.Round][h.impl.GetPublicKey().String()] = leaderShare
+		rawLeaderShare, _, _ := leaderShare.Recover()
+		h.shares[aggMessage.Round][h.impl.GetPublicKey().String()] = rawLeaderShare
 	}
 
-	h.shares[shareMsg.EncryptedMsg.Round][shareMsg.ServerPublicKey.String()] = shareMsg
+	h.shares[aggMessage.Round][srvSigner.String()] = shareMsg
 
 	shares := []*zipnet.UnblindedShareMessage{}
-	for _, share := range h.shares[shareMsg.EncryptedMsg.Round] {
+	for _, share := range h.shares[aggMessage.Round] {
 		shares = append(shares, share)
 	}
 
 	// Try to wrap up the round
 
-	roundOutput, err := h.impl.DeriveRoundOutput(r.Context(), shares)
+	roundOutput, err := h.impl.DeriveRoundOutput(ctx, shares)
 	if err != nil && strings.Contains(err.Error(), "shares, got") { // TODO: handle the error check better
-		w.WriteHeader(http.StatusAccepted)
-		json.NewEncoder(w).Encode(map[string]string{
-			"status":  "accepted",
-			"message": "Share processed, waiting for more",
-		})
-		return
+		return roundOutput, http.StatusAccepted, nil
 	} else if err != nil {
-		http.Error(w, fmt.Errorf("unexpected error while processing share: %w", err).Error(), http.StatusInternalServerError)
+		return nil, http.StatusInternalServerError, fmt.Errorf("unexpected error while processing share: %w", err)
 	}
 
-	h.roundOutputs[shareMsg.EncryptedMsg.Round] = roundOutput
-	if shareMsg.EncryptedMsg.Round >= h.curRound {
-		h.curRound = shareMsg.EncryptedMsg.Round + 1
-		if _, _, err := h.impl.PublishSchedule(h.ctx, h.curRound, roundOutput.Message.NextSchedVec); err != nil {
-			log.Panicln()
-		}
-	}
+	h.roundOutputs[aggMessage.Round] = roundOutput
 
 	// Otherwise, return the server message (final output)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-
-	// Serialize and return the server message
-	responseData, err := zipnet.SerializeMessage(roundOutput)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to serialize response: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	w.Write(responseData)
+	return roundOutput, http.StatusOK, nil
 }
 
 func (h *ServerHandler) aggregate(w http.ResponseWriter, r *http.Request) {
+	// Note: there are some unexpected calls to aggregate
 	defer r.Body.Close()
-	aggregateMsg, err := zipnet.DecodeMessage[zipnet.AggregatorMessage](r.Body)
+	aggregateMsg, err := zipnet.DecodeMessage[zipnet.Signed[zipnet.AggregatorMessage]](r.Body)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to parse aggregator message: %v", err), http.StatusBadRequest)
 		return
@@ -354,8 +338,14 @@ func (h *ServerHandler) aggregate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO: should submit the unblinded message to the leader
-	// TODO: if leader, should try to derive round output
+	if h.impl.IsLeader() {
+		go func() {
+			_, _, err := h.processShare(context.Background(), unblindedMsg)
+			if err != nil {
+				log.Println(fmt.Errorf("could not process share: %w", err))
+			}
+		}()
+	}
 
 	// Otherwise, return the server message (final output)
 	w.Header().Set("Content-Type", "application/json")
@@ -363,7 +353,7 @@ func (h *ServerHandler) aggregate(w http.ResponseWriter, r *http.Request) {
 
 	w.Write(responseData)
 
-	if h.transport != nil {
+	if h.transport != nil && !h.impl.IsLeader() {
 		go func() {
 			h.mutex.Lock()
 			defer h.mutex.Unlock()
@@ -400,30 +390,89 @@ func (h *ServerHandler) RunInBackground() {
 // runLeaderTasks runs the background tasks specific to a leader server
 func (h *ServerHandler) runLeaderTasks() {
 	log.Println("Running leader-specific background tasks")
-	<-h.ctx.Done()
+	var currentRound uint64 = zipnet.CurrentRound(h.impl.config.RoundDuration)
+	var roundOffset time.Duration = time.Duration(h.impl.config.RoundDuration.Milliseconds()*90/100) * time.Millisecond
+
+	for {
+		select {
+		case <-h.ctx.Done():
+			return
+		case <-time.After(time.Until(zipnet.RoundOffset(currentRound, h.impl.config.RoundDuration, roundOffset))):
+			err := h.PublishScheduleFor(currentRound + 1)
+			if err != nil {
+				log.Println(fmt.Errorf("could not publish schedule for round %d: %w", currentRound, err))
+			}
+			currentRound = currentRound + 1
+		}
+	}
+}
+
+func (h *ServerHandler) PublishScheduleFor(round uint64) error {
+	if round == 0 {
+		initialSchedVec := make([]byte, h.impl.config.SchedulingSlots)
+		_, _, err := h.impl.PublishSchedule(h.ctx, 0, initialSchedVec)
+		return err
+	}
+
+	h.mutex.Lock()
+	defer h.mutex.Unlock()
+	roundOutput, found := h.roundOutputs[round-1]
+	if !found {
+		initialSchedVec := make([]byte, h.impl.config.SchedulingSlots)
+		_, _, err := h.impl.PublishSchedule(h.ctx, round, initialSchedVec)
+		return err
+	} else {
+		_, _, err := h.impl.PublishSchedule(h.ctx, round, roundOutput.UnsafeObject().NextSchedVec)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // runFollowerTasks runs the background tasks specific to a follower server
 func (h *ServerHandler) runFollowerTasks() {
 	log.Println("Running follower-specific background tasks")
 
-	// Create ticker for checking for updates from the leader
-	syncTicker := time.NewTicker(2 * time.Second)
-
-	defer func() {
-		syncTicker.Stop()
-		log.Println("Follower background tasks stopped")
-	}()
+	var currentRound uint64 = zipnet.CurrentRound(h.impl.config.RoundDuration)
+	var roundOffset time.Duration = time.Duration(h.impl.config.RoundDuration.Milliseconds()*12/10) * time.Millisecond
 
 	for {
 		select {
 		case <-h.ctx.Done():
 			return
-
-		case <-syncTicker.C:
-			continue
+		case <-time.After(time.Until(zipnet.RoundOffset(currentRound, h.impl.config.RoundDuration, roundOffset))):
+			err := h.updateSchedule(currentRound + 1)
+			if err != nil {
+				log.Println(fmt.Errorf("could not fetch schedule for round %d", currentRound+1))
+			}
+			currentRound = currentRound + 1
 		}
 	}
+}
+
+func (h *ServerHandler) updateSchedule(round uint64) error {
+	var leader string
+	for _, server := range h.servers {
+		if server.IsLeader {
+			leader = server.PublicKey.String()
+		}
+	}
+	if leader == "" {
+		return errors.New("no leader")
+	}
+
+	schedule, err := h.transport.FetchSchedule(context.TODO(), leader, round)
+	if err != nil {
+		return err
+	}
+
+	err = h.impl.SetSchedule(context.TODO(), round, schedule.Footprints, schedule.Signature)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // Shutdown stops all background tasks

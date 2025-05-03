@@ -1,6 +1,6 @@
 module github.com/ruteri/go-zipnet
 
-go 1.21
+go 1.24
 
 require (
 	github.com/flashbots/go-utils v0.6.1-0.20240610084140-4461ab748667
@@ -14,6 +14,7 @@ require (
 	go.opentelemetry.io/otel/metric v1.21.0
 	go.opentelemetry.io/otel/sdk/metric v1.21.0
 	go.uber.org/atomic v1.11.0
+	golang.org/x/crypto v0.17.0
 )
 
 require (

@@ -4,45 +4,8 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/ruteri/go-zipnet/aggregator"
 	"github.com/ruteri/go-zipnet/client"
-	"github.com/ruteri/go-zipnet/crypto"
 )
-
-type AggregatorHandler struct {
-	Aggregator *aggregator.AggregatorImpl
-}
-
-func NewAggregatorHandler(aggregator *aggregator.AggregatorImpl) *AggregatorHandler {
-	return &AggregatorHandler{Aggregator: aggregator}
-}
-
-func (h *AggregatorHandler) RunInBackground() {
-	// 0. Register with servers
-	// In the background:
-	// 1. Keep track of leader server & rounds
-	// 2. Aggregate and submit messages
-}
-
-func (h *AggregatorHandler) RegisterRoutes(r chi.Router) {
-	r.Post("/aggregator/config", h.handleConfig)
-	r.Post("/aggregator/register-user", h.handleUser)
-	r.Post("/aggregator/client-message", h.handleClientMessage)
-	r.Post("/aggregator/aggregator-message", h.handleAggregatorMessage)
-}
-
-func (h *AggregatorHandler) handleConfig(w http.ResponseWriter, r *http.Request) {
-}
-
-func (h *AggregatorHandler) handleUser(w http.ResponseWriter, r *http.Request) {
-	h.Aggregator.WhitelistUser(crypto.PublicKey{})
-}
-
-func (h *AggregatorHandler) handleClientMessage(w http.ResponseWriter, r *http.Request) {
-}
-
-func (h *AggregatorHandler) handleAggregatorMessage(w http.ResponseWriter, r *http.Request) {
-}
 
 type ClientHandler struct {
 	Client *client.ClientImpl
