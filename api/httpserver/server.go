@@ -11,8 +11,8 @@ import (
 	"github.com/flashbots/go-utils/httplogger"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"github.com/ruteri/go-zipnet/common"
-	"github.com/ruteri/go-zipnet/metrics"
+	"github.com/flashbots/adcnet/common"
+	"github.com/flashbots/adcnet/metrics"
 	"go.uber.org/atomic"
 )
 

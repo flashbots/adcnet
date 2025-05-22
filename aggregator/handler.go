@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/ruteri/go-zipnet/crypto"
-	"github.com/ruteri/go-zipnet/zipnet"
+	"github.com/flashbots/adcnet/crypto"
+	"github.com/flashbots/adcnet/zipnet"
 )
 
 type AggregatorHandler struct {

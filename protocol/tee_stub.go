@@ -12,7 +12,7 @@ import (
 	"io"
 	"sync"
 
-	"github.com/ruteri/go-zipnet/crypto"
+	"github.com/flashbots/adcnet/crypto"
 )
 
 // InMemoryTEE implements the zipnet.TEE interface for testing purposes.

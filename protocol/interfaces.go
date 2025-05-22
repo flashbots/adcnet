@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/ruteri/go-zipnet/crypto"
+	"github.com/flashbots/adcnet/crypto"
 )
 
 // Client defines the interface for a ZIPNet client that participates in the

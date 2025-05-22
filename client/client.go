@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/ruteri/go-zipnet/crypto"
-	"github.com/ruteri/go-zipnet/zipnet"
+	"github.com/flashbots/adcnet/crypto"
+	"github.com/flashbots/adcnet/zipnet"
 )
 
 // ClientImpl implements the ZIPNet protocol client that operates within a TEE.

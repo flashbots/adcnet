@@ -1,4 +1,4 @@
-module github.com/ruteri/go-zipnet
+module github.com/flashbots/adcnet
 
 go 1.24
 

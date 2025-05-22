@@ -3,7 +3,7 @@ package protocol
 import (
 	"context"
 
-	"github.com/ruteri/go-zipnet/crypto"
+	"github.com/flashbots/adcnet/crypto"
 )
 
 // MockClient implements the Client interface for testing purposes.

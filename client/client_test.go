@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ruteri/go-zipnet/aggregator"
-	"github.com/ruteri/go-zipnet/crypto"
-	"github.com/ruteri/go-zipnet/server"
-	"github.com/ruteri/go-zipnet/zipnet"
+	"github.com/flashbots/adcnet/aggregator"
+	"github.com/flashbots/adcnet/crypto"
+	"github.com/flashbots/adcnet/server"
+	"github.com/flashbots/adcnet/zipnet"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

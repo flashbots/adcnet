@@ -6,7 +6,7 @@ import (
 	"errors"
 	"io"
 
-	"github.com/ruteri/go-zipnet/crypto"
+	"github.com/flashbots/adcnet/crypto"
 )
 
 type Signed[T any] struct {

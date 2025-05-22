@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ruteri/go-zipnet/crypto"
-	"github.com/ruteri/go-zipnet/zipnet"
+	"github.com/flashbots/adcnet/crypto"
+	"github.com/flashbots/adcnet/zipnet"
 )
 
 // UpdatedAggregatorMessageHelpers provides updated helpers for working with signed aggregator messages

@@ -15,11 +15,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/ruteri/go-zipnet/aggregator"
-	"github.com/ruteri/go-zipnet/crypto"
-	"github.com/ruteri/go-zipnet/server"
-	"github.com/ruteri/go-zipnet/testutil"
-	"github.com/ruteri/go-zipnet/zipnet"
+	"github.com/flashbots/adcnet/aggregator"
+	"github.com/flashbots/adcnet/crypto"
+	"github.com/flashbots/adcnet/server"
+	"github.com/flashbots/adcnet/testutil"
+	"github.com/flashbots/adcnet/zipnet"
 )
 
 // TestClientHandlerEndToEnd tests the complete flow of the ZIPNet protocol

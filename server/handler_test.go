@@ -15,8 +15,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/ruteri/go-zipnet/crypto"
-	"github.com/ruteri/go-zipnet/zipnet"
+	"github.com/flashbots/adcnet/crypto"
+	"github.com/flashbots/adcnet/zipnet"
 )
 
 // TestServerHandlerGreenPath tests the happy path flow through the server handler

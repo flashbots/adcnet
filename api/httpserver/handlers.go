@@ -4,7 +4,7 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/ruteri/go-zipnet/client"
+	"github.com/flashbots/adcnet/client"
 )
 
 type ClientHandler struct {

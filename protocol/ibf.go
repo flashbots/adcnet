@@ -5,7 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"github.com/ruteri/go-zipnet/crypto"
+	"github.com/flashbots/adcnet/crypto"
 )
 
 const IBFNChunks int = 3 // TODO: rename to levels
@@ -43,8 +43,9 @@ func NewIBFVector(messageSlots uint32) *IBFVector {
 
 func (v *IBFVector) InsertChunk(msg [IBFChunkSize]byte) {
 	for level := 0; level < IBFNChunks; level++ {
-		indexSeed := sha256.Sum256([]byte(fmt.Sprintf("%d%v", level, msg)))
-		index := int(binary.BigEndian.Uint64(indexSeed[0:8])) % len(v.Chunks[level])
+        dataToHash := append([]byte(fmt.Sprintf("%d", level)), msg[:]...)
+        indexSeed := sha256.Sum256(dataToHash)
+        index := uint64(binary.BigEndian.Uint64(indexSeed[0:8])) % uint64(len(v.Chunks[level]))
 
 		crypto.XorInplace(v.Chunks[level][index][:], msg[:])
 		v.Counters[level][index] += 1
@@ -179,8 +180,9 @@ func (v *IBFVector) Recover() [][IBFChunkSize]byte {
 
                     // Remove this chunk from all levels to continue peeling
                     for innerLevel := range workingCopy.Chunks {
-                        innerIndexSeed := sha256.Sum256([]byte(fmt.Sprintf("%d%v", innerLevel, chunk)))
-                        innerIndex := int(binary.BigEndian.Uint64(innerIndexSeed[0:8])) % len(workingCopy.Chunks[innerLevel])
+						dataToHash := append([]byte(fmt.Sprintf("%d", innerLevel)), chunk[:]...)
+						innerIndexSeed := sha256.Sum256(dataToHash)
+						innerIndex := uint64(binary.BigEndian.Uint64(innerIndexSeed[0:8])) % uint64(len(v.Chunks[innerLevel]))
 
                         // XOR out the chunk from this cell
                         crypto.XorInplace(workingCopy.Chunks[innerLevel][innerIndex][:], chunk[:])

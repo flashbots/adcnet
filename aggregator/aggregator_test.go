@@ -6,9 +6,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/ruteri/go-zipnet/crypto"
-	"github.com/ruteri/go-zipnet/testutil"
-	"github.com/ruteri/go-zipnet/zipnet"
+	"github.com/flashbots/adcnet/crypto"
+	"github.com/flashbots/adcnet/testutil"
+	"github.com/flashbots/adcnet/zipnet"
 )
 
 // Helper function to create test aggregators

@@ -16,8 +16,8 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/ruteri/go-zipnet/crypto"
-	"github.com/ruteri/go-zipnet/zipnet"
+	"github.com/flashbots/adcnet/crypto"
+	"github.com/flashbots/adcnet/zipnet"
 )
 
 // AggregatorImpl implements the Aggregator interface for the ZIPNet protocol.
