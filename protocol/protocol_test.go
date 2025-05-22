@@ -79,7 +79,7 @@ func TestZIPNetRoutinesE2E(t *testing.T) {
 	client1RoundMsg, _, err := client1Messager.PrepareMessage(
 		1, // round 1
 		nil, // no previous round output
-		client1Message,
+		nil, // no previous round message
 		client1AuctionData,
 	)
 	require.NoError(t, err)
@@ -90,7 +90,7 @@ func TestZIPNetRoutinesE2E(t *testing.T) {
 	client2RoundMsg, _, err := client2Messager.PrepareMessage(
 		1, // round 1
 		nil, // no previous round output
-		client2Message,
+		nil, // no previous round message
 		client2AuctionData,
 	)
 	require.NoError(t, err)
@@ -155,7 +155,7 @@ func TestZIPNetRoutinesE2E(t *testing.T) {
 	client1RoundMsg2, shouldSend1, err := client1Messager.PrepareMessage(
 		2, // round 2
 		signedRound1Output,
-		client1MessageRound2,
+		client1Message,
 		client1AuctionDataRound2,
 	)
 	require.NoError(t, err)
@@ -169,7 +169,7 @@ func TestZIPNetRoutinesE2E(t *testing.T) {
 	client2RoundMsg2, shouldSend2, err := client2Messager.PrepareMessage(
 		2, // round 2
 		signedRound1Output,
-		client2MessageRound2,
+		client2Message,
 		client2AuctionDataRound2,
 	)
 	require.NoError(t, err)
@@ -234,6 +234,8 @@ func TestZIPNetRoutinesE2E(t *testing.T) {
 	// In round 2, we should only have client1's message in the output
 	assert.Equal(t, 1, len(clientMsgsRound2), "Only one client should send message in round 2")
 	assert.Equal(t, client1PK.String(), clientMsgsRound2[0].PublicKey.String(), "Client 1 should be the one sending in round 2")
+
+	assert.Equal(t, client1Message, round2Output.MessageVector[0:len(client1Message)])
 }
 
 // Helper functions for testing

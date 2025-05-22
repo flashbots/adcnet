@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"io"
@@ -62,11 +63,19 @@ type AuctionData struct {
 }
 
 func (a *AuctionData) EncodeToChunk() [IBFChunkSize]byte {
-	return [IBFChunkSize]byte{}
+	var res [IBFChunkSize]byte
+	binary.BigEndian.PutUint64(res[0:8], uint64(a.Weight))
+	copy(res[8:40], a.MessageHash[:])
+	return res
 }
 
 func AuctionDataFromChunk(chunk [IBFChunkSize]byte) *AuctionData {
-	return &AuctionData{}
+	var res AuctionData
+
+	copy(res.MessageHash[:], chunk[8:40])
+	res.Weight = int(binary.BigEndian.Uint64(chunk[0:8]))
+
+	return &res
 }
 
 func AuctionDataFromMessage(msg []byte, weight int) *AuctionData {

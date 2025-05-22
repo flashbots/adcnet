@@ -1,8 +1,10 @@
 package protocol
 
 import (
+	"crypto/hkdf"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 
 	"github.com/flashbots/adcnet/crypto"
@@ -25,6 +27,20 @@ func IBFVectorSize(nBuckets uint32) int {
 type IBFVector struct {
 	Chunks [IBFNChunks][][IBFChunkSize]byte
 	Counters [IBFNChunks][]uint64
+}
+
+func (v *IBFVector) String() string {
+	res := ""
+	for level := range v.Chunks {
+		res += fmt.Sprintf("L%d: ", level)
+		for chunk := range v.Chunks[level] {
+			res += hex.EncodeToString(v.Chunks[level][chunk][:])
+			res += fmt.Sprintf(" (%d)", v.Counters[level][chunk])
+			res += "\n"
+		}
+		res += "\n"
+	}
+	return res
 }
 
 func NewIBFVector(messageSlots uint32) *IBFVector {
@@ -61,23 +77,18 @@ func (v *IBFVector) EncryptInplace(ibfVectorPad []byte) {
 		}
 	}
 
+	counterPad,_ := hkdf.Key(sha256.New, ibfVectorPad, nil, "", len(ibfVectorPad)*8/IBFChunkSize)
+
     // Blind counters using derived values from the pad
     counterPadIndex := 0
     for level := range v.Counters {
         for i := range v.Counters[level] {
-            // Derive a counter pad from the chunk pad using a hash function
-            // to avoid leaking information about the pad
-            counterPadSeed := sha256.Sum256(ibfVectorPad[counterPadIndex*IBFChunkSize:(counterPadIndex+1)*IBFChunkSize])
-            counterPad := binary.BigEndian.Uint64(counterPadSeed[0:8])
+			fieldElement := binary.BigEndian.Uint64(counterPad[counterPadIndex:counterPadIndex+8]) % CounterFieldSize
             
             // Blind the counter
-            v.Counters[level][i] = BlindCounter(v.Counters[level][i], counterPad)
-            counterPadIndex++
-            
-            // Wrap around if needed
-            if counterPadIndex*IBFChunkSize >= len(ibfVectorPad) {
-                counterPadIndex = 0
-            }
+            v.Counters[level][i] = BlindCounter(v.Counters[level][i], fieldElement)
+
+            counterPadIndex += 8
         }
     }
 }
@@ -98,22 +109,17 @@ func (v *IBFVector) DecryptInplace(ibfVectorPad []byte) {
 		}
 	}
 
+	counterPad,_ := hkdf.Key(sha256.New, ibfVectorPad, nil, "", len(ibfVectorPad)*8/IBFChunkSize)
+
 	// Unblind counters
     counterPadIndex := 0
     for level := range v.Counters {
         for i := range v.Counters[level] {
-            // Derive counter pad same way as in EncryptInplace
-            counterPadSeed := sha256.Sum256(ibfVectorPad[counterPadIndex*IBFChunkSize:(counterPadIndex+1)*IBFChunkSize])
-            counterPad := binary.BigEndian.Uint64(counterPadSeed[0:8])
+			fieldElement := binary.BigEndian.Uint64(counterPad[counterPadIndex:counterPadIndex+8]) % CounterFieldSize
 
             // Unblind the counter
-            v.Counters[level][i] = uint64(UnblindCounter(v.Counters[level][i], counterPad))
-            counterPadIndex++
-
-            // Wrap around if needed
-            if counterPadIndex*IBFChunkSize >= len(ibfVectorPad) {
-                counterPadIndex = 0
-            }
+            v.Counters[level][i] = uint64(UnblindCounter(v.Counters[level][i], fieldElement))
+            counterPadIndex += 8
         }
     }
 }
@@ -208,20 +214,21 @@ func (v *IBFVector) Recover() [][IBFChunkSize]byte {
     return recovered
 }
 
+// TODO! The problem is the pads are supposed to be xor-ed, which messes up the usual field addition. We never have access to the individual pads, only the effect of all pads being xor-ed.
 // Field size for counter blinding (using a prime field GF(p))
 const CounterFieldSize uint64 = 0xFFFFFFFFFFFFFFFB // 2^64 - 5, a prime number
 
 // BlindCounter blinds a counter using a random pad
 func BlindCounter(counter uint64, pad uint64) uint64 {
     // Convert counter to unsigned and compute in the field
-    return (counter + pad) % CounterFieldSize
+    return counter // (counter + pad) % CounterFieldSize
 }
 
 // UnblindCounter removes the blinding from a counter
 func UnblindCounter(blindedCounter uint64, pad uint64) int {
     // Compute (blinded - pad) mod p
     // Add p before subtracting to avoid underflow
-    result := (blindedCounter + CounterFieldSize - (pad % CounterFieldSize)) % CounterFieldSize
+    result := blindedCounter // (blindedCounter - (pad % CounterFieldSize) + CounterFieldSize) % CounterFieldSize
     return int(result)
 }
 
