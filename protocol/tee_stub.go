@@ -1,4 +1,4 @@
-package zipnet
+package protocol
 
 import (
 	"crypto/aes"

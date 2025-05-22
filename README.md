@@ -1,17 +1,17 @@
-# go-ZIPNet - Anonymous Broadcast Protocol
+# ADCNet - Anonymous Broadcast Protocol
 
-[![Goreport status](https://goreportcard.com/badge/github.com/ruteri/go-zipnet)](https://goreportcard.com/report/github.com/ruteri/go-zipnet)
-[![Test status](https://github.com/ruteri/go-zipnet/workflows/Checks/badge.svg?branch=main)](https://github.com/ruteri/go-zipnet/actions?query=workflow%3A%22Checks%22)
+[![Goreport status](https://goreportcard.com/badge/github.com/ruteri/auction-based-dcnet)](https://goreportcard.com/report/github.com/ruteri/auction-based-dcnet)
+[![Test status](https://github.com/ruteri/auction-based-dcnet/workflows/Checks/badge.svg?branch=main)](https://github.com/ruteri/auction-based-dcnet/actions?query=workflow%3A%22Checks%22)
 
-go-ZIPNet is a Golang implementation of the "ZIPNet: Low-bandwidth anonymous broadcast from (dis)Trusted Execution Environments" protocol. It provides an efficient, scalable, and robust anonymous broadcast channel with high trust diversity and low bandwidth requirements.
+Auction-based DCNet is a Golang implementation of the "ZIPNet: Low-bandwidth anonymous broadcast from (dis)Trusted Execution Environments" protocol. It provides an efficient, scalable, and robust anonymous broadcast channel with high trust diversity and low bandwidth requirements.
 
 ## Overview
 
-ZIPNet allows participants to broadcast messages without revealing who sent which message. It improves upon existing anonymous broadcast protocols by significantly reducing server computational overhead and bandwidth requirements, making it practical to deploy with many untrusted servers for better anonymity guarantees.
+ADCNet allows participants to broadcast messages without revealing who sent which message. It improves upon existing anonymous broadcast protocols by significantly reducing server computational overhead and bandwidth requirements, making it practical to deploy with many untrusted servers for better anonymity guarantees.
 
 ## Architecture
 
-ZIPNet consists of three main components:
+ADCNet consists of three main components:
 
 ### 1. Clients
 
@@ -32,7 +32,29 @@ Servers operate in an anytrust model where privacy is guaranteed as long as at l
 - **Efficient Cover Traffic**: Makes non-talking participants extremely cheap, encouraging large anonymity sets
 - **Scalable Trust Model**: Supports hundreds of anytrust servers with minimal performance penalty
 - **Forward Secrecy**: Uses key ratcheting to ensure past communications remain secure
-- **Footprint Scheduling**: Efficient slot reservation mechanism for message transmission
+- **Auction-based Scheduling**: Uses an Invertible Bloom Filter (IBF) for efficient and fair slot allocation
+- **Dynamic Message Sizing**: Supports variable-length messages allocated through the auction mechanism
+
+## Protocol Innovations
+
+### Invertible Bloom Filter (IBF) for Message Scheduling
+
+ADCNet uses an Invertible Bloom Filter to enable an auction-based scheduling mechanism. Instead of randomly selecting slots with static sizes (as in the original footprint scheduling), clients bid for message space by submitting weights in an auction:
+
+1. Clients compute a hash of their message and include it with a weight in an AuctionData structure
+2. These auction entries are inserted into an IBF with multiple levels and buckets
+3. The IBF is encrypted using one-time pads derived from shared secrets with servers
+4. After server decryption and aggregation, the IBF is "peeled" to recover all auction entries
+5. Message slots are allocated based on auction weights, with higher weights receiving priority
+
+### Dynamic Message Allocation
+
+Unlike the original fixed-size message slots, ADCNet now supports dynamic message sizing:
+
+1. Clients participate in the auction process to bid for message space
+2. The protocol compares message weights to determine slot allocation
+3. A knapsack-style optimization allocates message space based on auction results
+4. This approach provides more efficient bandwidth utilization for variable-sized messages
 
 ## Implementation Details
 
@@ -41,7 +63,8 @@ This Go implementation provides:
 - Strong typing for cryptographic primitives (Hash, Signature, PublicKey, etc.)
 - Clean interfaces for Clients, Aggregators, and Servers
 - Abstractions for TEEs, cryptographic operations, and network transport
-- Footprint scheduling for efficient slot reservation
+- IBF-based auction mechanism for efficient slot reservation
+- Support for dynamic message sizes
 
 ## Getting Started
 
@@ -53,120 +76,16 @@ This Go implementation provides:
 ### Installation
 
 ```bash
-go get github.com/ruteri/go-zipnet
-```
-
-### Example Usage
-
-#### Configuration
-
-```go
-config := &zipnet.ZIPNetConfig{
-    RoundDuration:   5 * time.Second,
-    MessageSlots:    1024,
-    MessageSize:     160,
-    SchedulingSlots: 4096,
-    FootprintBits:   64,
-    MinClients:      100,
-    AnytrustServers: []string{"server1.example.com", "server2.example.com"},
-    Aggregators:     []string{"agg1.example.com"},
-    RoundsPerWindow: 100,
-}
-```
-
-#### Running a Client
-
-```go
-// Initialize dependencies
-tee := NewIntelSGXTEE()
-crypto := zipnet.NewStandardCryptoProvider()
-network := NewHTTPNetworkTransport()
-scheduler := NewDefaultScheduler()
-
-// Create a client
-client, err := client.NewClient(config, tee, crypto, network, scheduler)
-if err != nil {
-    log.Fatalf("Failed to create client: %v", err)
-}
-
-// Register server public keys
-for id, pubKey := range serverPublicKeys {
-    err := client.RegisterServerPublicKey(id, pubKey)
-    if err != nil {
-        log.Fatalf("Failed to register server %s: %v", id, err)
-    }
-}
-
-// Send a message
-message := []byte("Hello, anonymous world!")
-msg, err := client.SubmitMessage(ctx, currentRound, message, true, publishedSchedule)
-if err != nil {
-    log.Fatalf("Failed to submit message: %v", err)
-}
-```
-
-#### Running an Aggregator
-
-```go
-// Initialize dependencies
-crypto := zipnet.NewStandardCryptoProvider()
-network := NewHTTPNetworkTransport()
-
-// Create an aggregator
-aggregator, err := aggregator.NewAggregator(config, privateKey, publicKey,
-    crypto, network, registeredUsers, 0)
-if err != nil {
-    log.Fatalf("Failed to create aggregator: %v", err)
-}
-
-// Start processing for a new round
-if err := aggregator.Reset(currentRound); err != nil {
-    log.Fatalf("Failed to reset aggregator: %v", err)
-}
-
-// Receive a client message
-if err := aggregator.ReceiveClientMessage(ctx, clientMessage, clientPublicKey); err != nil {
-    log.Printf("Failed to process client message: %v", err)
-}
-
-// Create aggregate and forward to servers
-aggregate, err := aggregator.AggregateMessages(ctx, currentRound)
-if err != nil {
-    log.Fatalf("Failed to create aggregate: %v", err)
-}
-```
-
-#### Running a Server
-
-```go
-// Initialize dependencies
-crypto := zipnet.NewStandardCryptoProvider()
-network := NewHTTPNetworkTransport()
-
-// Create a server
-server, err := server.NewServer(config, crypto, network, isLeader)
-if err != nil {
-    log.Fatalf("Failed to create server: %v", err)
-}
-
-// Register a client
-if err := server.RegisterClient(ctx, clientPublicKey, attestation); err != nil {
-    log.Printf("Failed to register client: %v", err)
-}
-
-// Process an aggregate from an aggregator
-serverMessage, err := server.ProcessAggregate(ctx, aggregateMessage)
-if err != nil {
-    log.Fatalf("Failed to process aggregate: %v", err)
-}
+go get github.com/ruteri/auction-based-dcnet
 ```
 
 ## Security Considerations
 
-- ZIPNet provides anonymity as long as at least one anytrust server is honest
-- TEE security is required only for DoS prevention, not privacy
+- ADC provides anonymity as long as at least one anytrust server is honest
+- TEE security is required only for DoS prevention and faithful auction outcomes, not privacy
 - All client messages must be processed or none; selective dropping breaks anonymity
 - The protocol operates in rounds with synchrony assumptions
+- The IBF-based auction mechanism ensures fair slot allocation while maintaining anonymity
 
 ## License
 
@@ -174,6 +93,6 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## Acknowledgements
 
-ZIPNet is based on the research paper:
+ADC is based on the research paper:
 
 Rosenberg, M., Shih, M., Zhao, Z., Wang, R., Miers, I., & Zhang, F. (2023). ZIPNet: Low-bandwidth anonymous broadcast from (dis)Trusted Execution Environments.

@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"slices"
 
 	"crypto/hkdf"
 )
@@ -387,3 +388,25 @@ func (p *StandardCryptoProvider) Hash(data []byte) (Hash, error) {
 func (p *StandardCryptoProvider) RatchetKey(key SharedKey) (SharedKey, error) {
 	return key.Ratchet()
 }
+
+func Xor(data []byte, key []byte) []byte {
+	res := slices.Clone(data)
+	if len(data) != len(key) {
+		panic("xor of unequal length, refusing to continue")
+	}
+	for i := range data {
+		res[i] ^= key[i]
+	}
+
+	return res
+}
+
+func XorInplace(data []byte, key []byte) {
+	if len(data) != len(key) {
+		panic("xor of unequal length, refusing to continue")
+	}
+	for i := range data {
+		data[i] ^= key[i]
+	}
+}
+
