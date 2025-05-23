@@ -11,15 +11,15 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/flashbots/adcnet/crypto"
-	"github.com/flashbots/adcnet/zipnet"
+	"github.com/flashbots/adcnet/protocol"
+	"github.com/go-chi/chi/v5"
 )
 
 // ClientHandler provides HTTP endpoints for client operations in the ZIPNet protocol
 type ClientHandler struct {
 	impl           *ClientImpl
-	transport      zipnet.NetworkTransport
+	transport      protocol.NetworkTransport
 	ctx            context.Context
 	cancelFunc     context.CancelFunc
 	leaderServerID string

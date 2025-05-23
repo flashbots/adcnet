@@ -12,14 +12,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/flashbots/adcnet/crypto"
-	"github.com/flashbots/adcnet/zipnet"
+	"github.com/flashbots/adcnet/protocol"
+	"github.com/go-chi/chi/v5"
 )
 
 type ServerHandler struct {
 	impl      *ServerImpl
-	transport zipnet.NetworkTransport
+	transport protocol.NetworkTransport
 
 	// For managing background tasks
 	ctx        context.Context

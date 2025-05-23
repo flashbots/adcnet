@@ -89,7 +89,7 @@ func (v *IBFVector) Bytes() []byte {
 	return res
 }
 
-func (v *IBFVector) EncryptInplace(ibfVectorPad []byte, counterBlinders []uint64) {
+func (v *IBFVector) EncryptInplace(ibfVectorPad AuctionPad, counterBlinders CountersPad) {
 	index := uint32(0)
 	for level := range v.Chunks {
 		for chunk := range v.Chunks[level] {
@@ -125,14 +125,13 @@ func (v *IBFVector) Clone() *IBFVector {
 	return newCopy
 }
 
-func (v *IBFVector) Encrypt(ibfVectorPad []byte, counterBlinders []uint64) *IBFVector {
-	// TODO: deep copy
-	res := &(*v)
+func (v *IBFVector) Encrypt(ibfVectorPad []byte, counterBlinders CountersPad) *IBFVector {
+	res := v.Clone()
 	res.EncryptInplace(ibfVectorPad, counterBlinders)
 	return res
 }
 
-func (v *IBFVector) DecryptInplace(ibfVectorPad []byte, counterBlinders []uint64) {
+func (v *IBFVector) DecryptInplace(ibfVectorPad []byte, counterBlinders CountersPad) {
 	index := uint32(0)
 	for level := range v.Chunks {
 		for chunk := range v.Chunks[level] {
@@ -151,7 +150,7 @@ func (v *IBFVector) DecryptInplace(ibfVectorPad []byte, counterBlinders []uint64
 	}
 }
 
-func (v *IBFVector) Decrypt(ibfVectorPad []byte, counterBlinders []uint64) *IBFVector {
+func (v *IBFVector) Decrypt(ibfVectorPad []byte, counterBlinders CountersPad) *IBFVector {
 	// TODO: deep copy
 	res := &(*v)
 	res.DecryptInplace(ibfVectorPad, counterBlinders)
@@ -239,37 +238,4 @@ func (v *IBFVector) Recover() [][IBFChunkSize]byte {
 	}
 
 	return recovered
-}
-
-// Note: this is all most likely insecure. Only for illustration!
-// Field size for counter blinding (using a prime field GF(p))
-const CounterFieldSize uint64 = 0xFFFFFFFFFFFFFFFB // 2^64 - 5, a prime number
-
-// BlindCounter blinds a counter using a random pad
-func BlindCounter(counter uint64, pad uint64) uint64 {
-	// Convert counter to unsigned and compute in the field
-	return (counter + pad) % CounterFieldSize
-}
-
-func UnionCounterPadsInplace(pads1 []uint64, pads2 []uint64) {
-	for i := range pads1 {
-		pads1[i] = (pads1[i] + pads2[i]) % CounterFieldSize
-	}
-}
-
-func UnionCounterPad(pad1 uint64, pad2 uint64) uint64 {
-	return (pad1 + pad2) % CounterFieldSize
-}
-
-// UnblindCounter removes the blinding from a counter
-func UnblindCounter(blindedCounter uint64, pad uint64) int {
-	// Compute (blinded - pad) mod p
-	// Add p before subtracting to avoid underflow
-	result := (blindedCounter - (pad % CounterFieldSize) + CounterFieldSize) % CounterFieldSize
-	return int(result)
-}
-
-// Add two blinded counters together
-func AddBlindedCounters(a, b uint64) uint64 {
-	return (a + b) % CounterFieldSize
 }

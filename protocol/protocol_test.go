@@ -8,6 +8,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TODO: test packing multiple messages!
+
 // TestZIPNetRoutinesE2E tests the core protocol routines in a simple end-to-end flow
 // covering two rounds of the protocol to demonstrate the auction mechanism.
 func TestZIPNetRoutinesE2E(t *testing.T) {
@@ -29,7 +31,7 @@ func TestZIPNetRoutinesE2E(t *testing.T) {
 	// Create test config
 	config := &ZIPNetConfig{
 		MessageSlots: 10,
-		MessageSize:  100,
+		MessageSize:  60, // Small enough that only one message fits
 	}
 
 	// Create client and server messagers

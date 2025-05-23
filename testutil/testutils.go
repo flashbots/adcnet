@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/flashbots/adcnet/crypto"
-	"github.com/flashbots/adcnet/zipnet"
+	"github.com/flashbots/adcnet/protocol"
 )
 
 // UpdatedAggregatorMessageHelpers provides updated helpers for working with signed aggregator messages

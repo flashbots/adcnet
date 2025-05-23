@@ -1,11 +1,11 @@
-// Package protocol implements an auction-based anonymous broadcast channel, loosely
+// Package protocol implements ADCNet: an auction-based anonymous broadcast channel, loosely
 // based on the paper "ZIPNet: Low-bandwidth anonymous broadcast from (dis)Trusted
 // Execution Environments" with extensions for auction-based message scheduling
 // and dynamic message sizing.
 //
-// # ABABC Architecture and Workflow
+// # ADCNet Architecture and Workflow
 //
-// ABABC operates through a three-tier architecture:
+// ADCNet operates through a three-tier architecture:
 //
 //  1. Clients: Run inside Trusted Execution Environments (TEEs) and prepare
 //     encrypted messages. The TEE is used only for DoS prevention, not for
@@ -23,7 +23,7 @@
 //
 // # Core Protocol Operations (protocols.go)
 //
-// The protocols.go file implements the core message processing operations in ABABC:
+// The protocols.go file implements the core message processing operations in ADCNet:
 //
 // ## Server Operations
 //
@@ -82,7 +82,7 @@
 //
 // # Dynamic Message Sizing
 //
-// Unlike the original fixed-size message slots, ABABC supports dynamic
+// Unlike the original fixed-size message slots, ADCNet supports dynamic
 // message sizing through the auction mechanism:
 //
 //   - Clients determine if they won the auction by comparing their weight to other

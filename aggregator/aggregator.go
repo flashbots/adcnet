@@ -13,11 +13,10 @@ package aggregator
 
 import (
 	"errors"
-	"fmt"
 	"sync"
 
 	"github.com/flashbots/adcnet/crypto"
-	"github.com/flashbots/adcnet/zipnet"
+	"github.com/flashbots/adcnet/protocol"
 )
 
 // AggregatorImpl implements the Aggregator interface for the ZIPNet protocol.
@@ -26,13 +25,12 @@ import (
 type AggregatorImpl struct {
 	publicKey             crypto.PublicKey
 	privateKey            crypto.PrivateKey
-	cryptoProvider        zipnet.CryptoProvider
-	config                *zipnet.ZIPNetConfig
+	config                *protocol.ZIPNetConfig
 	registeredUsers       map[string]bool // Set of registered user public keys
 	registeredAggregators map[string]bool // Set of registered aggregator public keys
 
 	// State for the current round
-	level uint64
+	level        uint64
 	currentRound uint64
 
 	mutex sync.RWMutex // For thread safety
@@ -46,15 +44,11 @@ type AggregatorImpl struct {
 // The level parameter specifies the aggregator's position in the hierarchy:
 // - Level 0: Leaf aggregator, receives messages directly from clients
 // - Level > 0: Non-leaf aggregator, receives messages from lower-level aggregators
-func NewAggregator(config *zipnet.ZIPNetConfig, privateKey crypto.PrivateKey, publicKey crypto.PublicKey,
-	cryptoProvider zipnet.CryptoProvider,
+func NewAggregator(config *protocol.ZIPNetConfig, privateKey crypto.PrivateKey, publicKey crypto.PublicKey,
 	registeredUsers []crypto.PublicKey, registeredAggregators []crypto.PublicKey, level uint64) (*AggregatorImpl, error) {
 
 	if config == nil {
 		return nil, errors.New("config cannot be nil")
-	}
-	if cryptoProvider == nil {
-		return nil, errors.New("crypto provider cannot be nil")
 	}
 
 	// Initialize the registered users map
@@ -71,12 +65,11 @@ func NewAggregator(config *zipnet.ZIPNetConfig, privateKey crypto.PrivateKey, pu
 	a := &AggregatorImpl{
 		publicKey:             publicKey,
 		privateKey:            privateKey,
-		cryptoProvider:        cryptoProvider,
 		config:                config,
 		registeredUsers:       userMap,
 		registeredAggregators: aggMap,
 		level:                 level,
-		currentRound:          zipnet.CurrentRound(config.RoundDuration),
+		currentRound:          protocol.CurrentRound(config.RoundDuration),
 	}
 
 	return a, nil

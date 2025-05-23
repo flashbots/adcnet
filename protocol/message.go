@@ -1,8 +1,6 @@
 package protocol
 
 import (
-	"crypto/sha256"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"io"
@@ -57,60 +55,12 @@ func (s *Signed[T]) Recover() (*T, crypto.PublicKey, error) {
 	return s.Object, s.PublicKey, nil
 }
 
-type AuctionData struct {
-	MessageHash crypto.Hash
-	Weight      int
-}
-
-func (a *AuctionData) EncodeToChunk() [IBFChunkSize]byte {
-	var res [IBFChunkSize]byte
-	binary.BigEndian.PutUint64(res[0:8], uint64(a.Weight))
-	copy(res[8:40], a.MessageHash[:])
-	return res
-}
-
-func AuctionDataFromChunk(chunk [IBFChunkSize]byte) *AuctionData {
-	var res AuctionData
-
-	copy(res.MessageHash[:], chunk[8:40])
-	res.Weight = int(binary.BigEndian.Uint64(chunk[0:8]))
-
-	return &res
-}
-
-func AuctionDataFromMessage(msg []byte, weight int) *AuctionData {
-	return &AuctionData{
-		MessageHash: sha256.Sum256(msg),
-		Weight:      weight,
-	}
-}
-
 type MessageVector = []byte
-
-type ClientRoundData struct {
-	RoundNubmer   int
-	IBFVector     IBFVector
-	MessageVector MessageVector
-}
-
-func (c *ClientRoundData) Encrypt(ibfVectorPad []byte, msgVectorPad []byte) *ClientRoundMessage {
-	// pads are the xor of pads generated for each server
-	return nil
-}
-
-func (c *ClientRoundData) Decrypt(ibfVectorPad []byte, msgVectorPad []byte) *ClientRoundMessage {
-	// pads are the xor of pads generated for each server
-	return nil
-}
 
 type ClientRoundMessage struct {
 	RoundNubmer   int
 	IBFVector     *IBFVector
 	MessageVector MessageVector
-}
-
-// TODO: how do we aggregate secrets for ibf?
-func (*IBFVector) Unblind() {
 }
 
 type AggregatedClientMessages struct {
@@ -120,22 +70,10 @@ type AggregatedClientMessages struct {
 	UserPKs       []crypto.PublicKey
 }
 
-func (m *AggregatedClientMessages) AggregateClientMessages(msgs []*Signed[ClientRoundMessage]) *AggregatedClientMessages {
-	return nil
-}
-
-func (m *AggregatedClientMessages) AggregateAggregates(msgs []*AggregatedClientMessages) *AggregatedClientMessages {
-	return nil
-}
-
 type ServerPartialDecryptionMessage struct {
 	OriginalAggregate AggregatedClientMessages
 	UserPKs           []crypto.PublicKey
 	BlindingVector    *BlindingVector
-}
-
-func UnblindAggregates(msgs []*AggregatedClientMessages, ibfVectorPad []byte, msgVectorPad []byte) *ServerPartialDecryptionMessage {
-	return nil
 }
 
 type ServerRoundData struct {

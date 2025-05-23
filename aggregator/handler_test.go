@@ -35,12 +35,9 @@ func TestEndToEndFlow(t *testing.T) {
 		testutil.WithSchedulingSlots(40),
 	)
 
-	// Create standard crypto provider for all components
-	cryptoProvider := crypto.NewStandardCryptoProvider()
-
 	// ========== 1. SET UP SERVER ==========
 	// Create and setup server components
-	leaderServer, err := server.NewServer(config, cryptoProvider, true)
+	leaderServer, err := server.NewServer(config, true)
 	require.NoError(t, err)
 
 	// Create server handler and routes
@@ -67,7 +64,6 @@ func TestEndToEndFlow(t *testing.T) {
 		config,
 		aggSK,
 		aggPK,
-		cryptoProvider,
 		transport,
 		nil, // Empty initial user list
 		nil, // Empty initial aggregators list

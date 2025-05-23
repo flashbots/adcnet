@@ -8,11 +8,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/flashbots/adcnet/common"
+	"github.com/flashbots/adcnet/metrics"
 	"github.com/flashbots/go-utils/httplogger"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"github.com/flashbots/adcnet/common"
-	"github.com/flashbots/adcnet/metrics"
 	"go.uber.org/atomic"
 )
 

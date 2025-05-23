@@ -16,7 +16,7 @@ func (s *ServerMessager) UnblindAggregates(currentRound int, msgs []*Signed[Aggr
 	unifiedAggregate := AggregatedClientMessages{
 		RoundNubmer:   currentRound,
 		IBFVector:     NewIBFVector(s.Config.MessageSlots),
-		MessageVector: make([]byte, s.Config.MessageSize*s.Config.MessageSlots),
+		MessageVector: make([]byte, s.Config.MessageSize),
 	}
 	for _, msg := range msgs {
 		rawMsg, signer, err := msg.Recover()
@@ -32,12 +32,13 @@ func (s *ServerMessager) UnblindAggregates(currentRound int, msgs []*Signed[Aggr
 		}
 
 		// TODO: consider recovering and checking user signatures rather than aggregator ones
+		// TODO: aggregate user signatures (BLS or equivalent)
 		unifiedAggregate.UserPKs = append(unifiedAggregate.UserPKs, rawMsg.UserPKs...)
 		unifiedAggregate.IBFVector.UnionInplace(rawMsg.IBFVector)
 		crypto.XorInplace(unifiedAggregate.MessageVector, rawMsg.MessageVector)
 	}
 
-	blindingVector := NewBlindingVector(s.Config.MessageSize*s.Config.MessageSlots, s.Config.MessageSlots)
+	blindingVector := NewBlindingVector(s.Config.MessageSize, s.Config.MessageSlots)
 	for _, userPk := range unifiedAggregate.UserPKs {
 		sharedKey, ok := s.SharedSecrets[userPk.String()]
 		if !ok {
@@ -58,7 +59,7 @@ func (s *ServerMessager) UnblindAggregates(currentRound int, msgs []*Signed[Aggr
 }
 
 func (s *ServerMessager) UnblindPartialMessages(msgs []*Signed[ServerPartialDecryptionMessage], allowedServers map[string]bool) (*ServerRoundData, error) {
-	blindingVector := NewBlindingVector(s.Config.MessageSize*s.Config.MessageSlots, s.Config.MessageSlots)
+	blindingVector := NewBlindingVector(s.Config.MessageSize, s.Config.MessageSlots)
 
 	for _, msg := range msgs {
 		rawMsg, signer, err := msg.Recover()
@@ -105,6 +106,7 @@ func AggregateClientMessages(round int, msgs []*Signed[ClientRoundMessage], auth
 			return nil, fmt.Errorf("client message for round %d, expected %d", rawMsg.RoundNubmer, round)
 		}
 
+		// TODO: aggregate user signatures (BLS or equivalent)
 		aggregatedMsg.UserPKs = append(aggregatedMsg.UserPKs, signer)
 		aggregatedMsg.IBFVector.UnionInplace(rawMsg.IBFVector)
 		crypto.XorInplace(aggregatedMsg.MessageVector, rawMsg.MessageVector)
@@ -136,6 +138,7 @@ func AggregateAggregates(round int, msgs []*Signed[AggregatedClientMessages], au
 		}
 
 		// Alternatively recover user messages
+		// TODO: aggregate user signatures (BLS or equivalent)
 		aggregatedMsg.UserPKs = append(aggregatedMsg.UserPKs, rawMsg.UserPKs...)
 		aggregatedMsg.IBFVector.UnionInplace(rawMsg.IBFVector)
 		crypto.XorInplace(aggregatedMsg.MessageVector, rawMsg.MessageVector)
@@ -150,31 +153,34 @@ type ClientMessager struct {
 }
 
 func (c *ClientMessager) PrepareMessage(currentRound int, previousRoundOutput *Signed[ServerRoundData], previousRoundMessage []byte, currentRoundAuctionData *AuctionData) (*ClientRoundMessage, bool, error) {
-	shouldSendMessage, messageIndex := func() (bool, int) {
+
+	// Note that messages must be salted (random prefix).
+	shouldSendMessage, messageIndex := func() (bool, uint32) {
 		if previousRoundOutput == nil || previousRoundOutput.UnsafeObject().RoundNubmer+1 != currentRound {
 			return false, 0
 		}
 
-		// Check if we won the last one
-		topWeight := 0
-		ourWeight := 0
-		previousRoundHash := sha256.Sum256(previousRoundMessage)
-		for _, chunk := range previousRoundOutput.UnsafeObject().IBFVector.Recover() {
-			auctionData := AuctionDataFromChunk(chunk)
-			if auctionData.MessageHash == previousRoundHash {
-				ourWeight = auctionData.Weight
-			} else {
-				if auctionData.Weight > topWeight {
-					topWeight = auctionData.Weight
-				}
-			}
+		chunks := previousRoundOutput.UnsafeObject().IBFVector.Recover()
+		bids := make([]AuctionData, 0, len(chunks))
+		for _, chunk := range chunks {
+			bids = append(bids, *AuctionDataFromChunk(chunk))
 		}
 
-		// TODO: approximage the knapsack!
-		return ourWeight > topWeight, 0
+		auctionEngine := NewAuctionEngine(c.Config.MessageSize, IBFChunkSize)
+		// Run auction to determine winners
+		winners := auctionEngine.RunAuction(bids)
+
+		// Check if we won
+		ourHash := sha256.Sum256(previousRoundMessage)
+		for _, winner := range winners {
+			if winner.Bid.MessageHash == ourHash {
+				return true, winner.SlotIdx
+			}
+		}
+		return false, 0
 	}()
 
-	blindingVector := NewBlindingVector(c.Config.MessageSize*c.Config.MessageSlots, c.Config.MessageSlots)
+	blindingVector := NewBlindingVector(c.Config.MessageSize, c.Config.MessageSlots)
 
 	var previousRoundAuction *IBFVector = nil
 	if previousRoundOutput != nil {
@@ -194,7 +200,7 @@ func (c *ClientMessager) PrepareMessage(currentRound int, previousRoundOutput *S
 
 	messageVector := blindingVector.MessagePad
 	if shouldSendMessage {
-		crypto.XorInplace(messageVector[messageIndex:messageIndex+len(previousRoundMessage)], previousRoundMessage)
+		crypto.XorInplace(messageVector[messageIndex:int(messageIndex)+len(previousRoundMessage)], previousRoundMessage)
 	}
 
 	return &ClientRoundMessage{

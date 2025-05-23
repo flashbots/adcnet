@@ -9,15 +9,15 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/flashbots/adcnet/crypto"
-	"github.com/flashbots/adcnet/zipnet"
+	"github.com/flashbots/adcnet/protocol"
+	"github.com/go-chi/chi/v5"
 )
 
 type AggregatorHandler struct {
 	Aggregator *AggregatorImpl
-	transport  zipnet.NetworkTransport
-	config     *zipnet.ZIPNetConfig
+	transport  protocol.NetworkTransport
+	config     *protocol.ZIPNetConfig
 
 	// For managing background tasks
 	ctx        context.Context
@@ -31,7 +31,7 @@ type AggregatorHandler struct {
 	nextRoundAt  time.Time
 }
 
-func NewAggregatorHandler(Aggregator *AggregatorImpl, transport zipnet.NetworkTransport) *AggregatorHandler {
+func NewAggregatorHandler(Aggregator *AggregatorImpl, transport protocol.NetworkTransport) *AggregatorHandler {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &AggregatorHandler{
 		Aggregator: Aggregator,
@@ -61,7 +61,7 @@ func (h *AggregatorHandler) RunInBackground() {
 
 // roundProcessingWorker manages the round lifecycle
 func (h *AggregatorHandler) roundProcessingWorker() {
-	var currentRound uint64 = zipnet.CurrentRound(h.Aggregator.config.RoundDuration)
+	var currentRound uint64 = protocol.CurrentRound(h.Aggregator.config.RoundDuration)
 
 	// Finalize halfway through the round
 	var roundOffset time.Duration = time.Duration(h.Aggregator.config.RoundDuration.Milliseconds()/2) * time.Millisecond

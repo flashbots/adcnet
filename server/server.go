@@ -8,7 +8,7 @@ import (
 	"sync"
 
 	"github.com/flashbots/adcnet/crypto"
-	"github.com/flashbots/adcnet/zipnet"
+	"github.com/flashbots/adcnet/protocol"
 )
 
 // ServerImpl implements the zipnet.Server interface for the ZIPNet protocol.
@@ -23,9 +23,9 @@ import (
 //     or collects all shares and derives the final output (if the leader)
 type ServerImpl struct {
 	// Server identity and configuration
-	config         *zipnet.ZIPNetConfig  // Protocol configuration
-	cryptoProvider zipnet.CryptoProvider // For cryptographic operations
-	isLeader       bool                  // Whether this server is the leader
+	config         *protocol.ZIPNetConfig // Protocol configuration
+	cryptoProvider zipnet.CryptoProvider  // For cryptographic operations
+	isLeader       bool                   // Whether this server is the leader
 
 	// Cryptographic keys
 	signingKey   crypto.PrivateKey // For signing messages
@@ -77,17 +77,17 @@ func NewServer(config *zipnet.ZIPNetConfig, cryptoProvider zipnet.CryptoProvider
 	h.Write(publicKey.Bytes())
 
 	server := &ServerImpl{
-		config:            config,
-		cryptoProvider:    cryptoProvider,
-		isLeader:          isLeader,
-		signingKey:        signingKey,
-		kemKey:            kemKey,
-		publicKey:         publicKey,
-		kemPublicKey:      kemPublicKey,
-		sharedSecrets:     make(map[string]crypto.SharedKey),
-		regUsers:          make(map[string]bool),
-		regAggregators:    make(map[string]bool),
-		regServers:        make(map[string]bool),
+		config:         config,
+		cryptoProvider: cryptoProvider,
+		isLeader:       isLeader,
+		signingKey:     signingKey,
+		kemKey:         kemKey,
+		publicKey:      publicKey,
+		kemPublicKey:   kemPublicKey,
+		sharedSecrets:  make(map[string]crypto.SharedKey),
+		regUsers:       make(map[string]bool),
+		regAggregators: make(map[string]bool),
+		regServers:     make(map[string]bool),
 	}
 
 	return server, nil

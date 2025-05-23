@@ -1,22 +1,19 @@
 package client
 
 import (
-	"crypto/sha256"
 	"errors"
 	"fmt"
 
 	"github.com/flashbots/adcnet/crypto"
-	"github.com/flashbots/adcnet/zipnet"
+	"github.com/flashbots/adcnet/protocol"
 )
 
 // ClientImpl implements the ZIPNet protocol client that operates within a TEE.
 // It handles message preparation, slot reservation, and participation in the
 // anonymous broadcast network.
 type ClientImpl struct {
-	config           *zipnet.ZIPNetConfig
-	tee              zipnet.TEE
-	crypto           zipnet.CryptoProvider
-	scheduler        zipnet.Scheduler
+	config           *protocol.ZIPNetConfig
+	tee              protocol.TEE
 	publicKey        crypto.PublicKey
 	privateKey       crypto.PrivateKey
 	key              []byte // Symmetric key for PRF operations
@@ -40,7 +37,7 @@ type ClientImpl struct {
 // - scheduler: Slot scheduling mechanism
 //
 // Returns an initialized client or an error if creation fails.
-func NewClient(config *zipnet.ZIPNetConfig, tee zipnet.TEE,
+func NewClient(config *protocol.ZIPNetConfig, tee zipnet.TEE,
 	cryptoProvider zipnet.CryptoProvider,
 	scheduler zipnet.Scheduler) (*ClientImpl, error) {
 	if config == nil {

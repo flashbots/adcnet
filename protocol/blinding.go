@@ -8,10 +8,13 @@ import (
 	"github.com/flashbots/adcnet/crypto"
 )
 
+type AuctionPad = []byte
+type CountersPad = []uint64
+
 type BlindingVector struct {
-	MessagePad  []byte
-	AuctionPad  []byte
-	CountersPad []uint64
+	MessagePad  MessageVector
+	AuctionPad  AuctionPad
+	CountersPad CountersPad
 }
 
 func NewBlindingVector(msgSize uint32, auctionBuckets uint32) *BlindingVector {
@@ -56,7 +59,7 @@ func (b *BlindingVector) DeriveInplace(round int, sharedKey crypto.SharedKey, pr
 	return nil
 }
 
-func GenCounterBlinders(roundSalt []byte, length int) ([]uint64, error) {
+func GenCounterBlinders(roundSalt []byte, length int) (CountersPad, error) {
 	elements := []uint64{}
 	counterPad, err := hkdf.Key(sha256.New, append(roundSalt, "counters"...), nil, "", length*8)
 	if err != nil {
@@ -69,4 +72,34 @@ func GenCounterBlinders(roundSalt []byte, length int) ([]uint64, error) {
 	}
 
 	return elements, nil
+}
+
+// Note: this is all most likely insecure. Only for illustration!
+// Field size for counter blinding (using a prime field GF(p))
+// Note: field is small, and a motivated adversary could brute-force it after some observation.
+const CounterFieldSize uint64 = 0xFFFFFFFFFFFFFFFB // 2^64 - 5, a prime number
+
+// BlindCounter blinds a counter using a random pad
+func BlindCounter(counter uint64, pad uint64) uint64 {
+	// Convert counter to unsigned and compute in the field
+	return (counter + pad) % CounterFieldSize
+}
+
+func UnionCounterPadsInplace(pads1 CountersPad, pads2 CountersPad) {
+	for i := range pads1 {
+		pads1[i] = (pads1[i] + pads2[i]) % CounterFieldSize
+	}
+}
+
+// UnblindCounter removes the blinding from a counter
+func UnblindCounter(blindedCounter uint64, pad uint64) int {
+	// Compute (blinded - pad) mod p
+	// Add p before subtracting to avoid underflow
+	result := (blindedCounter - (pad % CounterFieldSize) + CounterFieldSize) % CounterFieldSize
+	return int(result)
+}
+
+// Add two blinded counters together
+func AddBlindedCounters(a, b uint64) uint64 {
+	return (a + b) % CounterFieldSize
 }
