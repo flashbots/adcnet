@@ -14,14 +14,18 @@ const IBFNChunks int = 3 // TODO: rename to levels
 const IBFShrinkFactor float64 = 0.75
 const IBFChunkSize int = 48
 
-func IBFVectorSize(nBuckets uint32) int {
+func IBFVectorLength(nBuckets uint32) int {
 	n := 0
 	fac := 1.0
 	for i := 0; i < IBFNChunks; i++ {
-		n += int(float64(int(nBuckets)*IBFChunkSize)*fac)
+		n += int(float64(nBuckets)*fac)
 		fac *= IBFShrinkFactor
 	}
 	return n
+}
+
+func IBFVectorSize(nBuckets uint32) int {
+	return IBFVectorLength(nBuckets) * IBFChunkSize
 }
 
 type IBFVector struct {
@@ -68,7 +72,7 @@ func (v *IBFVector) InsertChunk(msg [IBFChunkSize]byte) {
 	}
 }
 
-func (v *IBFVector) EncryptInplace(ibfVectorPad []byte) {
+func (v *IBFVector) EncryptInplace(ibfVectorPad []byte,  counterBlinders []uint64) {
 	index := 0
 	for level := range v.Chunks {
 		for chunk := range v.Chunks[level] {
@@ -76,31 +80,27 @@ func (v *IBFVector) EncryptInplace(ibfVectorPad []byte) {
 			index += IBFChunkSize
 		}
 	}
-
-	counterPad,_ := hkdf.Key(sha256.New, ibfVectorPad, nil, "", len(ibfVectorPad)*8/IBFChunkSize)
 
     // Blind counters using derived values from the pad
     counterPadIndex := 0
     for level := range v.Counters {
         for i := range v.Counters[level] {
-			fieldElement := binary.BigEndian.Uint64(counterPad[counterPadIndex:counterPadIndex+8]) % CounterFieldSize
-            
             // Blind the counter
-            v.Counters[level][i] = BlindCounter(v.Counters[level][i], fieldElement)
+            v.Counters[level][i] = BlindCounter(v.Counters[level][i], counterBlinders[counterPadIndex])
 
-            counterPadIndex += 8
+            counterPadIndex++
         }
     }
 }
 
-func (v *IBFVector) Encrypt(ibfVectorPad []byte) *IBFVector {
+func (v *IBFVector) Encrypt(ibfVectorPad []byte, counterBlinders []uint64) *IBFVector {
 	// TODO: deep copy
 	res := &(*v)
-	res.EncryptInplace(ibfVectorPad)
+	res.EncryptInplace(ibfVectorPad, counterBlinders)
 	return res
 }
 
-func (v *IBFVector) DecryptInplace(ibfVectorPad []byte) {
+func (v *IBFVector) DecryptInplace(ibfVectorPad []byte, counterBlinders []uint64) {
 	index := 0
 	for level := range v.Chunks {
 		for chunk := range v.Chunks[level] {
@@ -109,25 +109,20 @@ func (v *IBFVector) DecryptInplace(ibfVectorPad []byte) {
 		}
 	}
 
-	counterPad,_ := hkdf.Key(sha256.New, ibfVectorPad, nil, "", len(ibfVectorPad)*8/IBFChunkSize)
-
 	// Unblind counters
     counterPadIndex := 0
     for level := range v.Counters {
         for i := range v.Counters[level] {
-			fieldElement := binary.BigEndian.Uint64(counterPad[counterPadIndex:counterPadIndex+8]) % CounterFieldSize
-
-            // Unblind the counter
-            v.Counters[level][i] = uint64(UnblindCounter(v.Counters[level][i], fieldElement))
-            counterPadIndex += 8
+            v.Counters[level][i] = uint64(UnblindCounter(v.Counters[level][i], counterBlinders[counterPadIndex]))
+            counterPadIndex += 1
         }
     }
 }
 
-func (v *IBFVector) Decrypt(ibfVectorPad []byte) *IBFVector {
+func (v *IBFVector) Decrypt(ibfVectorPad []byte, counterBlinders []uint64) *IBFVector {
 	// TODO: deep copy
 	res := &(*v)
-	res.DecryptInplace(ibfVectorPad)
+	res.DecryptInplace(ibfVectorPad, counterBlinders)
 	return res
 }
 
@@ -214,25 +209,51 @@ func (v *IBFVector) Recover() [][IBFChunkSize]byte {
     return recovered
 }
 
-// TODO! The problem is the pads are supposed to be xor-ed, which messes up the usual field addition. We never have access to the individual pads, only the effect of all pads being xor-ed.
+// Note: this is all most likely insecure. Only for illustration!
 // Field size for counter blinding (using a prime field GF(p))
 const CounterFieldSize uint64 = 0xFFFFFFFFFFFFFFFB // 2^64 - 5, a prime number
 
 // BlindCounter blinds a counter using a random pad
 func BlindCounter(counter uint64, pad uint64) uint64 {
     // Convert counter to unsigned and compute in the field
-    return counter // (counter + pad) % CounterFieldSize
+    return (counter + pad) % CounterFieldSize
+}
+
+func UnionCounterPadsInplace(pads1 []uint64, pads2 []uint64) {
+	for i := range pads1 {
+		pads1[i] = (pads1[i] + pads2[i]) % CounterFieldSize
+	}
+}
+
+func UnionCounterPad(pad1 uint64, pad2 uint64) uint64 {
+	return (pad1 + pad2) % CounterFieldSize
 }
 
 // UnblindCounter removes the blinding from a counter
 func UnblindCounter(blindedCounter uint64, pad uint64) int {
     // Compute (blinded - pad) mod p
     // Add p before subtracting to avoid underflow
-    result := blindedCounter // (blindedCounter - (pad % CounterFieldSize) + CounterFieldSize) % CounterFieldSize
+    result := (blindedCounter - (pad % CounterFieldSize) + CounterFieldSize) % CounterFieldSize
     return int(result)
 }
 
 // Add two blinded counters together
 func AddBlindedCounters(a, b uint64) uint64 {
     return (a + b) % CounterFieldSize
+}
+
+func GenCounterBlinders(round uint32, roundSalt []byte, length int) []uint64 {
+	if roundSalt == nil {
+		panic("no salt! refusing to continue")
+	}
+
+	seed := sha256.Sum256(binary.BigEndian.AppendUint32(roundSalt, round))
+	elements := []uint64{}
+	counterPad,_ := hkdf.Key(sha256.New, seed[:], nil, "", length*8)
+	for counterPadIndex := 0; counterPadIndex < length*8; counterPadIndex+=8 {
+		fieldElement := binary.BigEndian.Uint64(counterPad[counterPadIndex:counterPadIndex+8]) % CounterFieldSize
+elements = append(elements, fieldElement)
+	}
+
+	return elements
 }

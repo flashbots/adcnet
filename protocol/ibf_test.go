@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"crypto/rand"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestIBFVectorRecovery(t *testing.T) {
@@ -77,12 +79,13 @@ func TestIBFEncryptionDecryption(t *testing.T) {
 			copy(originalChunks[level][i][:], ibf.Chunks[level][i][:])
 		}
 	}
+
+	counterPads := GenCounterBlinders(1, []byte{}, IBFVectorLength(100))
 	
 	// Encrypt the IBF
-	ibf.EncryptInplace(pad)
+	ibf.EncryptInplace(pad, counterPads)
 	
 	// Verify the IBF is now different
-	/* TODO!
 	for level := range ibf.Counters {
 		for i := range ibf.Counters[level] {
 			if ibf.Counters[level][i] == originalCounters[level][i] && originalCounters[level][i] != 0 {
@@ -96,10 +99,9 @@ func TestIBFEncryptionDecryption(t *testing.T) {
 			}
 		}
 	}
-	*/
 	
 	// Decrypt the IBF
-	ibf.DecryptInplace(pad)
+	ibf.DecryptInplace(pad, counterPads)
 	
 	// Verify the IBF is now back to the original state
 	for level := range ibf.Counters {
@@ -168,9 +170,12 @@ func TestIBFUnion(t *testing.T) {
 	pad1 := make([]byte, padSize)
 	pad2 := make([]byte, padSize)
 	combinedPad := make([]byte, padSize)
-	
-	// rand.Read(pad1)
-	// rand.Read(pad2)
+
+	rand.Read(pad1)
+	rand.Read(pad2)
+
+	counterPads1 := GenCounterBlinders(1, []byte{1}, IBFVectorLength(10))
+	counterPads2 := GenCounterBlinders(1, []byte{2}, IBFVectorLength(10))
 	
 	// Combined pad is XOR of individual pads
 	for i := range pad1 {
@@ -178,14 +183,18 @@ func TestIBFUnion(t *testing.T) {
 	}
 	
 	// Encrypt both IBFs
-	ibf1.EncryptInplace(pad1)
-	ibf2.EncryptInplace(pad2)
+	ibf1.EncryptInplace(pad1, counterPads1)
+	ibf2.EncryptInplace(pad2, counterPads2)
 	
 	// Combine the IBFs
 	combined := ibf1.Union(ibf2)
+
+	combinedCounterPads := make([]uint64, len(counterPads1))
+	UnionCounterPadsInplace(combinedCounterPads, counterPads1)
+	UnionCounterPadsInplace(combinedCounterPads, counterPads2)
 	
 	// Decrypt the combined IBF with the combined pad
-	combined.DecryptInplace(combinedPad)
+	combined.DecryptInplace(combinedPad, combinedCounterPads)
 	
 	// Recover chunks from the combined IBF
 	recovered := combined.Recover()
@@ -211,6 +220,54 @@ func TestIBFUnion(t *testing.T) {
 			t.Errorf("Failed to recover chunk from combined IBF: %v", originalChunk)
 		}
 	}
+}
+
+func TestCountersE2E(t *testing.T) {
+	client1server1SharedKey := make([]byte, 32)
+	client2server1SharedKey := make([]byte, 32)
+
+	auctionPad := make([]byte, IBFVectorSize(10))
+
+	rand.Read(client1server1SharedKey)
+	rand.Read(client2server1SharedKey)
+
+	nCounters := IBFVectorLength(10)
+
+	// Client 1
+	client1server1counterBlinders := GenCounterBlinders(1, client1server1SharedKey, nCounters)
+
+	client1Message := AuctionDataFromMessage([]byte("abdc"), 5)
+	client1AuctionIBF := NewIBFVector(10)
+	client1AuctionIBF.InsertChunk(client1Message.EncodeToChunk())
+	client1AuctionIBF.EncryptInplace(auctionPad, client1server1counterBlinders)
+
+	// Client 2
+	client2server1counterBlinders := GenCounterBlinders(1, client2server1SharedKey, nCounters)
+
+	client2Message := AuctionDataFromMessage([]byte("abde"), 6)
+	client2AuctionIBF := NewIBFVector(10)
+	client2AuctionIBF.InsertChunk(client2Message.EncodeToChunk())
+	client2AuctionIBF.EncryptInplace(auctionPad, client2server1counterBlinders)
+
+	// Aggregator
+	aggregatorIBFVector := NewIBFVector(10)
+	aggregatorIBFVector.UnionInplace(client1AuctionIBF)
+	aggregatorIBFVector.UnionInplace(client2AuctionIBF)
+
+	// Server
+	serverIBFVector := NewIBFVector(10)
+	serverIBFVector.UnionInplace(aggregatorIBFVector)
+
+	serverCounterBlinders := make([]uint64, nCounters)
+	UnionCounterPadsInplace(serverCounterBlinders, GenCounterBlinders(1, client1server1SharedKey, nCounters))
+	UnionCounterPadsInplace(serverCounterBlinders, GenCounterBlinders(1, client2server1SharedKey, nCounters))
+
+	unblindedAuction := serverIBFVector.Decrypt(auctionPad, serverCounterBlinders)
+	chunks := unblindedAuction.Recover()
+	require.Equal(t, 2, len(chunks))
+	
+	require.Contains(t, chunks, client1Message.EncodeToChunk())
+	require.Contains(t, chunks, client2Message.EncodeToChunk())
 }
 
 // Helper function to check if a byte slice contains only zeros

@@ -135,6 +135,7 @@ type ServerPartialDecryptionMessage struct {
 	UserPKs []crypto.PublicKey
 	SchedulingPad []byte
 	MessagePad []byte
+	CounterBlinder []uint64
 }
 
 func UnblindAggregates(msgs []*AggregatedClientMessages, ibfVectorPad []byte, msgVectorPad []byte) *ServerPartialDecryptionMessage {
@@ -143,7 +144,7 @@ func UnblindAggregates(msgs []*AggregatedClientMessages, ibfVectorPad []byte, ms
 
 type ServerRoundData struct {
 	RoundNubmer int
-	IBFVector IBFVector
+	IBFVector *IBFVector
 	MessageVector MessageVector
 }
 

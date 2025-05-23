@@ -75,7 +75,7 @@ func TestZIPNetRoutinesE2E(t *testing.T) {
 	
 	// Client 1 prepares message with high weight (10)
 	client1Message := []byte("Message from client 1")
-	client1AuctionData := createTestAuctionData(client1Message, 10)
+	client1AuctionData := AuctionDataFromMessage(client1Message, 10)
 	client1RoundMsg, _, err := client1Messager.PrepareMessage(
 		1, // round 1
 		nil, // no previous round output
@@ -86,7 +86,7 @@ func TestZIPNetRoutinesE2E(t *testing.T) {
 	
 	// Client 2 prepares message with lower weight (5)
 	client2Message := []byte("Message from client 2")
-	client2AuctionData := createTestAuctionData(client2Message, 5)
+	client2AuctionData := AuctionDataFromMessage(client2Message, 5)
 	client2RoundMsg, _, err := client2Messager.PrepareMessage(
 		1, // round 1
 		nil, // no previous round output
@@ -116,7 +116,7 @@ func TestZIPNetRoutinesE2E(t *testing.T) {
 		[]*Signed[AggregatedClientMessages]{signedAggMsg},
 		map[string]bool{serverPK.String(): true},
 	)
-	require.NoError(t, err)
+	require.NoError(t, err, serverMessager.SharedSecrets)
 	
 	// Set original aggregate
 	partialDecryption.OriginalAggregate = *aggregatedMsg
@@ -151,7 +151,7 @@ func TestZIPNetRoutinesE2E(t *testing.T) {
 	
 	// Client 1 prepares message for round 2
 	client1MessageRound2 := []byte("Message from client 1 - round 2")
-	client1AuctionDataRound2 := createTestAuctionData(client1MessageRound2, 10)
+	client1AuctionDataRound2 := AuctionDataFromMessage(client1MessageRound2, 10)
 	client1RoundMsg2, shouldSend1, err := client1Messager.PrepareMessage(
 		2, // round 2
 		signedRound1Output,
@@ -165,7 +165,7 @@ func TestZIPNetRoutinesE2E(t *testing.T) {
 	
 	// Client 2 prepares message for round 2
 	client2MessageRound2 := []byte("Message from client 2 - round 2")
-	client2AuctionDataRound2 := createTestAuctionData(client2MessageRound2, 5)
+	client2AuctionDataRound2 := AuctionDataFromMessage(client2MessageRound2, 5)
 	client2RoundMsg2, shouldSend2, err := client2Messager.PrepareMessage(
 		2, // round 2
 		signedRound1Output,
@@ -236,16 +236,6 @@ func TestZIPNetRoutinesE2E(t *testing.T) {
 	assert.Equal(t, client1PK.String(), clientMsgsRound2[0].PublicKey.String(), "Client 1 should be the one sending in round 2")
 
 	assert.Equal(t, client1Message, round2Output.MessageVector[0:len(client1Message)])
-}
-
-// Helper functions for testing
-
-// createTestAuctionData creates auction data with specified weight
-func createTestAuctionData(message []byte, weight int) *AuctionData {
-	return &AuctionData{
-		MessageHash: sha256.Sum256(message),
-		Weight:      weight,
-	}
 }
 
 // Simple test crypto provider that satisfies the interface for tests

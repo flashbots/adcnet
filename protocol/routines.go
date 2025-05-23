@@ -14,6 +14,7 @@ type ServerMessager struct {
 }
 
 func (s *ServerMessager) UnblindAggregates(msgs []*Signed[AggregatedClientMessages], allowedAggregators map[string]bool) (*ServerPartialDecryptionMessage, error) {
+	round := msgs[0].UnsafeObject().RoundNubmer
 	unifiedAggregate := AggregatedClientMessages{
 		IBFVector: NewIBFVector(s.Config.MessageSlots),
 		MessageVector: make([]byte, s.Config.MessageSize*s.Config.MessageSlots),
@@ -27,7 +28,11 @@ func (s *ServerMessager) UnblindAggregates(msgs []*Signed[AggregatedClientMessag
 			return nil, fmt.Errorf("unauthorized aggregator %s", signer.String())
 		}
 
-		unifiedAggregate.UserPKs = append(unifiedAggregate.UserPKs, signer)
+		if round != rawMsg.RoundNubmer {
+			return nil, fmt.Errorf("attempt to unblind messages with differing rounds %d and %d", round, rawMsg.RoundNubmer)
+		}
+
+		unifiedAggregate.UserPKs = append(unifiedAggregate.UserPKs, rawMsg.UserPKs...)
 		unifiedAggregate.IBFVector.UnionInplace(rawMsg.IBFVector)
 		crypto.XorInplace(unifiedAggregate.MessageVector, rawMsg.MessageVector)
 	}
@@ -35,12 +40,20 @@ func (s *ServerMessager) UnblindAggregates(msgs []*Signed[AggregatedClientMessag
 	partialUnblindMessage := ServerPartialDecryptionMessage{
 		SchedulingPad: make([]byte, IBFVectorSize(s.Config.MessageSlots)),
 		MessagePad: make([]byte, s.Config.MessageSize*s.Config.MessageSlots),
+		CounterBlinder: make([]uint64, IBFVectorLength(s.Config.MessageSlots)),
 	}
 	for _, userPk := range unifiedAggregate.UserPKs {
-		auctionPad, msgPad, err := s.Crypto.KDF(s.SharedSecrets[userPk.String()], uint64(unifiedAggregate.RoundNubmer), []byte{}, len(partialUnblindMessage.SchedulingPad), len(partialUnblindMessage.MessagePad))
+		sharedKey, ok := s.SharedSecrets[userPk.String()]
+		if !ok {
+			return nil, fmt.Errorf("no shared key with user %x", userPk.Bytes())
+		}
+
+		auctionPad, msgPad, err := s.Crypto.KDF(sharedKey, uint64(unifiedAggregate.RoundNubmer), []byte{}, len(partialUnblindMessage.SchedulingPad), len(partialUnblindMessage.MessagePad))
 		if err != nil {
 			return nil, fmt.Errorf("could not derive pads: %w", err)
 		}
+
+		UnionCounterPadsInplace(partialUnblindMessage.CounterBlinder, GenCounterBlinders(uint32(round), sharedKey.Bytes(), len(partialUnblindMessage.CounterBlinder)))
 
 		crypto.XorInplace(partialUnblindMessage.SchedulingPad, auctionPad)
 		crypto.XorInplace(partialUnblindMessage.MessagePad, msgPad)
@@ -53,6 +66,7 @@ func (s *ServerMessager) UnblindPartialMessages(msgs []*Signed[ServerPartialDecr
 	allPartialMessages := ServerPartialDecryptionMessage{
 		SchedulingPad: make([]byte, IBFVectorSize(s.Config.MessageSlots)),
 		MessagePad: make([]byte, s.Config.MessageSize*s.Config.MessageSlots),
+		CounterBlinder: make([]uint64, IBFVectorLength(s.Config.MessageSlots)), 
 	}
 	for _, msg := range msgs {
 		rawMsg, signer, err := msg.Recover()
@@ -64,10 +78,11 @@ func (s *ServerMessager) UnblindPartialMessages(msgs []*Signed[ServerPartialDecr
 		}
 		crypto.XorInplace(allPartialMessages.SchedulingPad, rawMsg.SchedulingPad)
 		crypto.XorInplace(allPartialMessages.MessagePad, rawMsg.MessagePad)
+		UnionCounterPadsInplace(allPartialMessages.CounterBlinder, rawMsg.CounterBlinder)
 	}
 
 	unblindedMessage := ServerRoundData{}
-	unblindedMessage.IBFVector = *msgs[0].UnsafeObject().OriginalAggregate.IBFVector.Decrypt(allPartialMessages.SchedulingPad)
+	unblindedMessage.IBFVector = msgs[0].UnsafeObject().OriginalAggregate.IBFVector.Decrypt(allPartialMessages.SchedulingPad, allPartialMessages.CounterBlinder)
 	unblindedMessage.MessageVector = crypto.Xor(msgs[0].UnsafeObject().OriginalAggregate.MessageVector, allPartialMessages.MessagePad)
 
 	return &unblindedMessage, nil
@@ -139,6 +154,8 @@ type ClientMessager struct {
 }
 
 func (c *ClientMessager) PrepareMessage(currentRound int, previousRoundOutput *Signed[ServerRoundData], previousRoundMessage []byte, currentRoundAuctionData *AuctionData) (*ClientRoundMessage, bool, error) {
+		// TODO: previous round output should be parf of KDF
+
 	shouldSendMessage, messageIndex := func() (bool, int) {
 		if previousRoundOutput == nil || previousRoundOutput.UnsafeObject().RoundNubmer +1 != currentRound {
 			return false, 0
@@ -163,8 +180,8 @@ func (c *ClientMessager) PrepareMessage(currentRound int, previousRoundOutput *S
 		return ourWeight > topWeight, 0
 	}()
 
-	// TODO: counters blinding
 	auctionPad := make([]byte, IBFVectorSize(c.Config.MessageSlots))
+	counterBlinders := make([]uint64, IBFVectorLength(c.Config.MessageSlots))
 	messagePad := make([]byte, c.Config.MessageSize*c.Config.MessageSlots) // TODO: one size for dynamic messages
 
 	if shouldSendMessage {
@@ -178,11 +195,13 @@ func (c *ClientMessager) PrepareMessage(currentRound int, previousRoundOutput *S
 		}
 		crypto.XorInplace(auctionPad, auctionPrf)
 		crypto.XorInplace(messagePad, messagePrf)
+
+		UnionCounterPadsInplace(counterBlinders, GenCounterBlinders(uint32(currentRound), serverKem.Bytes(), len(counterBlinders)))
 	}
 
 	auctionIBF := NewIBFVector(c.Config.MessageSlots)
 	auctionIBF.InsertChunk(currentRoundAuctionData.EncodeToChunk())
-	auctionIBF.EncryptInplace(auctionPad)
+	auctionIBF.EncryptInplace(auctionPad, counterBlinders)
 
 	return &ClientRoundMessage{
 		RoundNubmer :currentRound,
