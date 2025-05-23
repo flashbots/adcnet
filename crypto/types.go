@@ -10,8 +10,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"slices"
-
-	"crypto/hkdf"
 )
 
 // Hash represents a cryptographic hash value using SHA-256 (32 bytes).
@@ -187,7 +185,7 @@ func NewSharedKey(data []byte) SharedKey {
 // Bytes returns the shared key as a byte slice.
 // This is useful when the key needs to be used in cryptographic operations.
 func (sk SharedKey) Bytes() []byte {
-	return sk
+	return slices.Clone(sk)
 }
 
 // Ratchet derives a new key from this shared key for forward secrecy.
@@ -274,121 +272,6 @@ func (fp Footprint) String() string {
 	return base64.StdEncoding.EncodeToString(fp)
 }
 
-// StandardCryptoProvider implements the zipnet.CryptoProvider interface
-// with standard cryptographic algorithms.
-// It provides a concrete implementation of all cryptographic operations
-// required by the ZIPNet protocol.
-type StandardCryptoProvider struct{}
-
-// NewStandardCryptoProvider creates a new standard crypto provider.
-// This is the default implementation used in the ZIPNet protocol.
-func NewStandardCryptoProvider() *StandardCryptoProvider {
-	return &StandardCryptoProvider{}
-}
-
-// DeriveSharedSecret derives a shared secret between two parties using their
-// public and private keys.
-//
-// Note: This is a simplified implementation for demonstration purposes.
-// A production implementation should use X25519 or another secure key
-// exchange algorithm.
-//
-// Parameters:
-// - privateKey: The caller's private key
-// - otherPublicKey: The other party's public key
-//
-// Returns the derived shared secret and any error that occurred.
-func (p *StandardCryptoProvider) DeriveSharedSecret(privateKey PrivateKey, otherPublicKey PublicKey) (SharedKey, error) {
-	// In a production implementation, this would use X25519
-	combined := append(privateKey.Bytes(), otherPublicKey.Bytes()...)
-	hash := sha256.Sum256(combined)
-	return NewSharedKey(hash[:]), nil
-}
-
-// KDF derives two keys from a master key using a key derivation function.
-// In ZIPNet, this is used to derive one-time pads for the scheduling vector
-// and message vector.
-//
-// Parameters:
-// - masterKey: The shared secret between client and server
-// - round: The current protocol round number
-// - publishedScheduleFootprints: The published schedule for this round
-//
-// Returns two derived keys (for schedule and message vectors) and any error.
-func (p *StandardCryptoProvider) KDF(masterKey SharedKey, round uint64, publishedScheduleFootprints []byte, schedPadLength, msgVecPadLength int) ([]byte, []byte, error) {
-	roundBytes := make([]byte, 8)
-	for i := 0; i < 8; i++ {
-		roundBytes[i] = byte(round >> uint(i*8))
-	}
-
-	// Derive key for schedule vector
-	schedInput := append(masterKey.Bytes(), append(roundBytes, publishedScheduleFootprints...)...)
-	schedHash := sha256.Sum256(schedInput)
-
-	// Derive key for message vector with different domain separation
-	msgInput := append(masterKey.Bytes(), append([]byte("msg"), append(roundBytes, publishedScheduleFootprints...)...)...)
-	msgHash := sha256.Sum256(msgInput)
-
-	schedPad, err := hkdf.Key(sha256.New, schedHash[:], nil, "", schedPadLength)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	msgPad, err := hkdf.Key(sha256.New, msgHash[:], nil, "", schedPadLength)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return schedPad, msgPad, nil
-}
-
-// Sign signs data with a private key using Ed25519.
-//
-// Parameters:
-// - privateKey: The private key to sign with
-// - data: The data to sign
-//
-// Returns the signature and any error that occurred.
-func (p *StandardCryptoProvider) Sign(privateKey PrivateKey, data []byte) (Signature, error) {
-	return Sign(privateKey, data)
-}
-
-// Verify verifies a signature using a public key.
-//
-// Parameters:
-// - publicKey: The public key to verify with
-// - data: The data that was signed
-// - signature: The signature to verify
-//
-// Returns error if signature is invalid.
-func (p *StandardCryptoProvider) Verify(publicKey PublicKey, data []byte, signature Signature) error {
-	if !signature.Verify(publicKey, data) {
-		return errors.New("invalid signature")
-	}
-	return nil
-}
-
-// Hash computes a SHA-256 hash of the provided data.
-//
-// Parameters:
-// - data: The data to hash
-//
-// Returns the hash value and any error that occurred.
-func (p *StandardCryptoProvider) Hash(data []byte) (Hash, error) {
-	return NewHash(data), nil
-}
-
-// RatchetKey rotates a key for forward secrecy by hashing it.
-// This is used after each round to prevent compromise of past communications.
-//
-// Parameters:
-// - key: The key to ratchet
-//
-// Returns the ratcheted key and any error that occurred.
-func (p *StandardCryptoProvider) RatchetKey(key SharedKey) (SharedKey, error) {
-	return key.Ratchet()
-}
-
 func Xor(data []byte, key []byte) []byte {
 	res := slices.Clone(data)
 	if len(data) != len(key) {
@@ -409,4 +292,3 @@ func XorInplace(data []byte, key []byte) {
 		data[i] ^= key[i]
 	}
 }
-

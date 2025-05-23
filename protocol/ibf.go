@@ -1,7 +1,6 @@
 package protocol
 
 import (
-	"crypto/hkdf"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -12,24 +11,24 @@ import (
 
 const IBFNChunks int = 3 // TODO: rename to levels
 const IBFShrinkFactor float64 = 0.75
-const IBFChunkSize int = 48
+const IBFChunkSize uint32 = 48
 
 func IBFVectorLength(nBuckets uint32) int {
 	n := 0
 	fac := 1.0
 	for i := 0; i < IBFNChunks; i++ {
-		n += int(float64(nBuckets)*fac)
+		n += int(float64(nBuckets) * fac)
 		fac *= IBFShrinkFactor
 	}
 	return n
 }
 
-func IBFVectorSize(nBuckets uint32) int {
-	return IBFVectorLength(nBuckets) * IBFChunkSize
+func IBFVectorSize(nBuckets uint32) uint32 {
+	return uint32(IBFVectorLength(nBuckets)) * IBFChunkSize
 }
 
 type IBFVector struct {
-	Chunks [IBFNChunks][][IBFChunkSize]byte
+	Chunks   [IBFNChunks][][IBFChunkSize]byte
 	Counters [IBFNChunks][]uint64
 }
 
@@ -52,7 +51,7 @@ func NewIBFVector(messageSlots uint32) *IBFVector {
 
 	fac := 1.0
 	for level := range res.Chunks {
-		slotsInLevel := int(float64(messageSlots)*fac)
+		slotsInLevel := int(float64(messageSlots) * fac)
 		res.Chunks[level] = make([][IBFChunkSize]byte, slotsInLevel)
 		res.Counters[level] = make([]uint64, slotsInLevel)
 		fac *= IBFShrinkFactor
@@ -63,17 +62,35 @@ func NewIBFVector(messageSlots uint32) *IBFVector {
 
 func (v *IBFVector) InsertChunk(msg [IBFChunkSize]byte) {
 	for level := 0; level < IBFNChunks; level++ {
-        dataToHash := append([]byte(fmt.Sprintf("%d", level)), msg[:]...)
-        indexSeed := sha256.Sum256(dataToHash)
-        index := uint64(binary.BigEndian.Uint64(indexSeed[0:8])) % uint64(len(v.Chunks[level]))
+		dataToHash := append([]byte(fmt.Sprintf("%d", level)), msg[:]...)
+		indexSeed := sha256.Sum256(dataToHash)
+		index := uint64(binary.BigEndian.Uint64(indexSeed[0:8])) % uint64(len(v.Chunks[level]))
 
 		crypto.XorInplace(v.Chunks[level][index][:], msg[:])
 		v.Counters[level][index] += 1
 	}
 }
 
-func (v *IBFVector) EncryptInplace(ibfVectorPad []byte,  counterBlinders []uint64) {
-	index := 0
+func (v *IBFVector) Bytes() []byte {
+	res := binary.BigEndian.AppendUint32([]byte{}, uint32(len(v.Chunks)))
+	res = binary.BigEndian.AppendUint32(res, uint32(len(v.Chunks[0])))
+	for level := range v.Chunks {
+		for chunk := range v.Chunks[level] {
+			res = append(res, v.Chunks[level][chunk][:]...)
+		}
+	}
+
+	for level := range v.Counters {
+		for i := range v.Counters[level] {
+			res = binary.BigEndian.AppendUint64(res, v.Counters[level][i])
+		}
+	}
+
+	return res
+}
+
+func (v *IBFVector) EncryptInplace(ibfVectorPad []byte, counterBlinders []uint64) {
+	index := uint32(0)
 	for level := range v.Chunks {
 		for chunk := range v.Chunks[level] {
 			crypto.XorInplace(v.Chunks[level][chunk][:], ibfVectorPad[index:index+IBFChunkSize])
@@ -81,16 +98,31 @@ func (v *IBFVector) EncryptInplace(ibfVectorPad []byte,  counterBlinders []uint6
 		}
 	}
 
-    // Blind counters using derived values from the pad
-    counterPadIndex := 0
-    for level := range v.Counters {
-        for i := range v.Counters[level] {
-            // Blind the counter
-            v.Counters[level][i] = BlindCounter(v.Counters[level][i], counterBlinders[counterPadIndex])
+	// Blind counters using derived values from the pad
+	counterPadIndex := 0
+	for level := range v.Counters {
+		for i := range v.Counters[level] {
+			// Blind the counter
+			v.Counters[level][i] = BlindCounter(v.Counters[level][i], counterBlinders[counterPadIndex])
 
-            counterPadIndex++
-        }
-    }
+			counterPadIndex++
+		}
+	}
+}
+
+func (v *IBFVector) Clone() *IBFVector {
+	newCopy := &IBFVector{}
+	for level := range v.Chunks {
+		newCopy.Counters[level] = make([]uint64, len(v.Counters[level]))
+		copy(newCopy.Counters[level], v.Counters[level])
+
+		newCopy.Chunks[level] = make([][IBFChunkSize]byte, len(v.Chunks[level]))
+		for i := range v.Chunks[level] {
+			copy(newCopy.Chunks[level][i][:], v.Chunks[level][i][:])
+		}
+	}
+
+	return newCopy
 }
 
 func (v *IBFVector) Encrypt(ibfVectorPad []byte, counterBlinders []uint64) *IBFVector {
@@ -101,7 +133,7 @@ func (v *IBFVector) Encrypt(ibfVectorPad []byte, counterBlinders []uint64) *IBFV
 }
 
 func (v *IBFVector) DecryptInplace(ibfVectorPad []byte, counterBlinders []uint64) {
-	index := 0
+	index := uint32(0)
 	for level := range v.Chunks {
 		for chunk := range v.Chunks[level] {
 			crypto.XorInplace(v.Chunks[level][chunk][:], ibfVectorPad[index:index+IBFChunkSize])
@@ -110,13 +142,13 @@ func (v *IBFVector) DecryptInplace(ibfVectorPad []byte, counterBlinders []uint64
 	}
 
 	// Unblind counters
-    counterPadIndex := 0
-    for level := range v.Counters {
-        for i := range v.Counters[level] {
-            v.Counters[level][i] = uint64(UnblindCounter(v.Counters[level][i], counterBlinders[counterPadIndex]))
-            counterPadIndex += 1
-        }
-    }
+	counterPadIndex := 0
+	for level := range v.Counters {
+		for i := range v.Counters[level] {
+			v.Counters[level][i] = uint64(UnblindCounter(v.Counters[level][i], counterBlinders[counterPadIndex]))
+			counterPadIndex += 1
+		}
+	}
 }
 
 func (v *IBFVector) Decrypt(ibfVectorPad []byte, counterBlinders []uint64) *IBFVector {
@@ -143,70 +175,70 @@ func (v *IBFVector) Union(other *IBFVector) *IBFVector {
 }
 
 func (v *IBFVector) Recover() [][IBFChunkSize]byte {
-    // Create a copy of the IBF to work with during recovery
-    // so we don't modify the original
-    workingCopy := &IBFVector{}
+	// Create a copy of the IBF to work with during recovery
+	// so we don't modify the original
+	workingCopy := &IBFVector{}
 
-    // Deep copy chunks and counters
-    for level := range v.Chunks {
-        workingCopy.Chunks[level] = make([][IBFChunkSize]byte, len(v.Chunks[level]))
-        workingCopy.Counters[level] = make([]uint64, len(v.Counters[level]))
+	// Deep copy chunks and counters
+	for level := range v.Chunks {
+		workingCopy.Chunks[level] = make([][IBFChunkSize]byte, len(v.Chunks[level]))
+		workingCopy.Counters[level] = make([]uint64, len(v.Counters[level]))
 
-        for i := range v.Chunks[level] {
-            copy(workingCopy.Chunks[level][i][:], v.Chunks[level][i][:])
-            workingCopy.Counters[level][i] = v.Counters[level][i]
-        }
-    }
+		for i := range v.Chunks[level] {
+			copy(workingCopy.Chunks[level][i][:], v.Chunks[level][i][:])
+			workingCopy.Counters[level][i] = v.Counters[level][i]
+		}
+	}
 
-    // Store recovered elements
-    recovered := make([][IBFChunkSize]byte, 0)
+	// Store recovered elements
+	recovered := make([][IBFChunkSize]byte, 0)
 
-    // Keep track of whether we made progress in the current iteration
-    madeProgress := true
+	// Keep track of whether we made progress in the current iteration
+	madeProgress := true
 
-    // Continue peeling until no more progress can be made
-    for madeProgress {
-        madeProgress = false
+	// Continue peeling until no more progress can be made
+	for madeProgress {
+		madeProgress = false
 
-        // Check each level for pure cells (counter = 1)
-        for level := range workingCopy.Chunks {
-            for i := range workingCopy.Chunks[level] {
-                // Found a pure cell
-                if workingCopy.Counters[level][i] == 1 {
-                    // Get the chunk from this cell
-                    chunk := workingCopy.Chunks[level][i]
+		// Check each level for pure cells (counter = 1)
+		for level := range workingCopy.Chunks {
+			for i := range workingCopy.Chunks[level] {
+				// Found a pure cell
+				if workingCopy.Counters[level][i] == 1 {
+					// Get the chunk from this cell
+					chunk := workingCopy.Chunks[level][i]
 
-                    // Record this chunk as recovered
-                    recovered = append(recovered, chunk)
+					// Record this chunk as recovered
+					recovered = append(recovered, chunk)
 
-                    // Remove this chunk from all levels to continue peeling
-                    for innerLevel := range workingCopy.Chunks {
+					// Remove this chunk from all levels to continue peeling
+					for innerLevel := range workingCopy.Chunks {
 						dataToHash := append([]byte(fmt.Sprintf("%d", innerLevel)), chunk[:]...)
 						innerIndexSeed := sha256.Sum256(dataToHash)
 						innerIndex := uint64(binary.BigEndian.Uint64(innerIndexSeed[0:8])) % uint64(len(v.Chunks[innerLevel]))
 
-                        // XOR out the chunk from this cell
-                        crypto.XorInplace(workingCopy.Chunks[innerLevel][innerIndex][:], chunk[:])
+						// XOR out the chunk from this cell
+						crypto.XorInplace(workingCopy.Chunks[innerLevel][innerIndex][:], chunk[:])
 
-                        // Decrement the counter
-                        workingCopy.Counters[innerLevel][innerIndex]--
-                    }
+						// Decrement the counter
+						workingCopy.Counters[innerLevel][innerIndex]--
+					}
 
-                    // We made progress in this iteration
-                    madeProgress = true
+					// We made progress in this iteration
+					madeProgress = true
 
-                    // Since we modified the IBF, start checking from the beginning again
-                    break
-                }
-            }
+					// Since we modified the IBF, start checking from the beginning again
+					break
+				}
+			}
 
-            if madeProgress {
-                break
-            }
-        }
-    }
+			if madeProgress {
+				break
+			}
+		}
+	}
 
-    return recovered
+	return recovered
 }
 
 // Note: this is all most likely insecure. Only for illustration!
@@ -215,8 +247,8 @@ const CounterFieldSize uint64 = 0xFFFFFFFFFFFFFFFB // 2^64 - 5, a prime number
 
 // BlindCounter blinds a counter using a random pad
 func BlindCounter(counter uint64, pad uint64) uint64 {
-    // Convert counter to unsigned and compute in the field
-    return (counter + pad) % CounterFieldSize
+	// Convert counter to unsigned and compute in the field
+	return (counter + pad) % CounterFieldSize
 }
 
 func UnionCounterPadsInplace(pads1 []uint64, pads2 []uint64) {
@@ -231,29 +263,13 @@ func UnionCounterPad(pad1 uint64, pad2 uint64) uint64 {
 
 // UnblindCounter removes the blinding from a counter
 func UnblindCounter(blindedCounter uint64, pad uint64) int {
-    // Compute (blinded - pad) mod p
-    // Add p before subtracting to avoid underflow
-    result := (blindedCounter - (pad % CounterFieldSize) + CounterFieldSize) % CounterFieldSize
-    return int(result)
+	// Compute (blinded - pad) mod p
+	// Add p before subtracting to avoid underflow
+	result := (blindedCounter - (pad % CounterFieldSize) + CounterFieldSize) % CounterFieldSize
+	return int(result)
 }
 
 // Add two blinded counters together
 func AddBlindedCounters(a, b uint64) uint64 {
-    return (a + b) % CounterFieldSize
-}
-
-func GenCounterBlinders(round uint32, roundSalt []byte, length int) []uint64 {
-	if roundSalt == nil {
-		panic("no salt! refusing to continue")
-	}
-
-	seed := sha256.Sum256(binary.BigEndian.AppendUint32(roundSalt, round))
-	elements := []uint64{}
-	counterPad,_ := hkdf.Key(sha256.New, seed[:], nil, "", length*8)
-	for counterPadIndex := 0; counterPadIndex < length*8; counterPadIndex+=8 {
-		fieldElement := binary.BigEndian.Uint64(counterPad[counterPadIndex:counterPadIndex+8]) % CounterFieldSize
-elements = append(elements, fieldElement)
-	}
-
-	return elements
+	return (a + b) % CounterFieldSize
 }

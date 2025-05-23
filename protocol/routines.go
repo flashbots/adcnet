@@ -8,15 +8,14 @@ import (
 )
 
 type ServerMessager struct {
-	Config           *ZIPNetConfig
-	Crypto CryptoProvider
-	SharedSecrets  map[string]crypto.SharedKey
+	Config        *ZIPNetConfig
+	SharedSecrets map[string]crypto.SharedKey
 }
 
-func (s *ServerMessager) UnblindAggregates(msgs []*Signed[AggregatedClientMessages], allowedAggregators map[string]bool) (*ServerPartialDecryptionMessage, error) {
-	round := msgs[0].UnsafeObject().RoundNubmer
+func (s *ServerMessager) UnblindAggregates(currentRound int, msgs []*Signed[AggregatedClientMessages], allowedAggregators map[string]bool, previousRoundAuction *IBFVector) (*ServerPartialDecryptionMessage, error) {
 	unifiedAggregate := AggregatedClientMessages{
-		IBFVector: NewIBFVector(s.Config.MessageSlots),
+		RoundNubmer:   currentRound,
+		IBFVector:     NewIBFVector(s.Config.MessageSlots),
 		MessageVector: make([]byte, s.Config.MessageSize*s.Config.MessageSlots),
 	}
 	for _, msg := range msgs {
@@ -28,46 +27,39 @@ func (s *ServerMessager) UnblindAggregates(msgs []*Signed[AggregatedClientMessag
 			return nil, fmt.Errorf("unauthorized aggregator %s", signer.String())
 		}
 
-		if round != rawMsg.RoundNubmer {
-			return nil, fmt.Errorf("attempt to unblind messages with differing rounds %d and %d", round, rawMsg.RoundNubmer)
+		if rawMsg.RoundNubmer != currentRound {
+			return nil, fmt.Errorf("message for incorrect round %d, expected %d", rawMsg.RoundNubmer, currentRound)
 		}
 
+		// TODO: consider recovering and checking user signatures rather than aggregator ones
 		unifiedAggregate.UserPKs = append(unifiedAggregate.UserPKs, rawMsg.UserPKs...)
 		unifiedAggregate.IBFVector.UnionInplace(rawMsg.IBFVector)
 		crypto.XorInplace(unifiedAggregate.MessageVector, rawMsg.MessageVector)
 	}
 
-	partialUnblindMessage := ServerPartialDecryptionMessage{
-		SchedulingPad: make([]byte, IBFVectorSize(s.Config.MessageSlots)),
-		MessagePad: make([]byte, s.Config.MessageSize*s.Config.MessageSlots),
-		CounterBlinder: make([]uint64, IBFVectorLength(s.Config.MessageSlots)),
-	}
+	blindingVector := NewBlindingVector(s.Config.MessageSize*s.Config.MessageSlots, s.Config.MessageSlots)
 	for _, userPk := range unifiedAggregate.UserPKs {
 		sharedKey, ok := s.SharedSecrets[userPk.String()]
 		if !ok {
 			return nil, fmt.Errorf("no shared key with user %x", userPk.Bytes())
 		}
 
-		auctionPad, msgPad, err := s.Crypto.KDF(sharedKey, uint64(unifiedAggregate.RoundNubmer), []byte{}, len(partialUnblindMessage.SchedulingPad), len(partialUnblindMessage.MessagePad))
+		err := blindingVector.DeriveInplace(currentRound, sharedKey, previousRoundAuction)
 		if err != nil {
 			return nil, fmt.Errorf("could not derive pads: %w", err)
 		}
-
-		UnionCounterPadsInplace(partialUnblindMessage.CounterBlinder, GenCounterBlinders(uint32(round), sharedKey.Bytes(), len(partialUnblindMessage.CounterBlinder)))
-
-		crypto.XorInplace(partialUnblindMessage.SchedulingPad, auctionPad)
-		crypto.XorInplace(partialUnblindMessage.MessagePad, msgPad)
 	}
 
-	return &partialUnblindMessage, nil
+	return &ServerPartialDecryptionMessage{
+		OriginalAggregate: unifiedAggregate,
+		UserPKs:           unifiedAggregate.UserPKs,
+		BlindingVector:    blindingVector,
+	}, nil
 }
 
 func (s *ServerMessager) UnblindPartialMessages(msgs []*Signed[ServerPartialDecryptionMessage], allowedServers map[string]bool) (*ServerRoundData, error) {
-	allPartialMessages := ServerPartialDecryptionMessage{
-		SchedulingPad: make([]byte, IBFVectorSize(s.Config.MessageSlots)),
-		MessagePad: make([]byte, s.Config.MessageSize*s.Config.MessageSlots),
-		CounterBlinder: make([]uint64, IBFVectorLength(s.Config.MessageSlots)), 
-	}
+	blindingVector := NewBlindingVector(s.Config.MessageSize*s.Config.MessageSlots, s.Config.MessageSlots)
+
 	for _, msg := range msgs {
 		rawMsg, signer, err := msg.Recover()
 		if err != nil {
@@ -76,24 +68,31 @@ func (s *ServerMessager) UnblindPartialMessages(msgs []*Signed[ServerPartialDecr
 		if !allowedServers[signer.String()] {
 			return nil, fmt.Errorf("unauthorized server %s", signer.String())
 		}
-		crypto.XorInplace(allPartialMessages.SchedulingPad, rawMsg.SchedulingPad)
-		crypto.XorInplace(allPartialMessages.MessagePad, rawMsg.MessagePad)
-		UnionCounterPadsInplace(allPartialMessages.CounterBlinder, rawMsg.CounterBlinder)
+		blindingVector.UnionInplace(rawMsg.BlindingVector)
 	}
 
-	unblindedMessage := ServerRoundData{}
-	unblindedMessage.IBFVector = msgs[0].UnsafeObject().OriginalAggregate.IBFVector.Decrypt(allPartialMessages.SchedulingPad, allPartialMessages.CounterBlinder)
-	unblindedMessage.MessageVector = crypto.Xor(msgs[0].UnsafeObject().OriginalAggregate.MessageVector, allPartialMessages.MessagePad)
+	originalAggregate := msgs[0].UnsafeObject().OriginalAggregate
+
+	unblindedMessage := ServerRoundData{
+		RoundNubmer:   originalAggregate.RoundNubmer,
+		IBFVector:     originalAggregate.IBFVector.Decrypt(blindingVector.AuctionPad, blindingVector.CountersPad),
+		MessageVector: crypto.Xor(originalAggregate.MessageVector, blindingVector.MessagePad),
+	}
 
 	return &unblindedMessage, nil
 }
 
 func AggregateClientMessages(round int, msgs []*Signed[ClientRoundMessage], authorizedClients map[string]bool) (*AggregatedClientMessages, error) {
 	aggregatedMsg := AggregatedClientMessages{
-		RoundNubmer : round,
+		RoundNubmer: round,
+		// TODO: initialize use Config instead
+		IBFVector:     NewIBFVector(uint32(len(msgs[0].UnsafeObject().IBFVector.Chunks[0]))),
+		MessageVector: make([]byte, len(msgs[0].UnsafeObject().MessageVector)),
 	}
 
 	for _, msg := range msgs {
+		// Note: should probably skip rather than break, or validaiton should
+		// be done separately so that the handler can choose
 		rawMsg, signer, err := msg.Recover()
 		if err != nil {
 			return nil, fmt.Errorf("invalid signature: %w", err)
@@ -106,12 +105,6 @@ func AggregateClientMessages(round int, msgs []*Signed[ClientRoundMessage], auth
 			return nil, fmt.Errorf("client message for round %d, expected %d", rawMsg.RoundNubmer, round)
 		}
 
-		// TODO: initialize use Config instead
-		if aggregatedMsg.IBFVector == nil {
-			aggregatedMsg.IBFVector = NewIBFVector(uint32(len(rawMsg.IBFVector.Chunks[0])))
-			aggregatedMsg.MessageVector = make([]byte, len(rawMsg.MessageVector))
-		}
-
 		aggregatedMsg.UserPKs = append(aggregatedMsg.UserPKs, signer)
 		aggregatedMsg.IBFVector.UnionInplace(rawMsg.IBFVector)
 		crypto.XorInplace(aggregatedMsg.MessageVector, rawMsg.MessageVector)
@@ -122,7 +115,7 @@ func AggregateClientMessages(round int, msgs []*Signed[ClientRoundMessage], auth
 
 func AggregateAggregates(round int, msgs []*Signed[AggregatedClientMessages], authorizedAggregators map[string]bool) (*AggregatedClientMessages, error) {
 	aggregatedMsg := AggregatedClientMessages{
-		RoundNubmer : round,
+		RoundNubmer: round,
 	}
 
 	for _, msg := range msgs {
@@ -138,6 +131,10 @@ func AggregateAggregates(round int, msgs []*Signed[AggregatedClientMessages], au
 			return nil, fmt.Errorf("client message for round %d, expected %d", rawMsg.RoundNubmer, round)
 		}
 
+		if aggregatedMsg.IBFVector == nil {
+			aggregatedMsg.IBFVector = NewIBFVector(uint32(len(rawMsg.IBFVector.Chunks[0])))
+		}
+
 		// Alternatively recover user messages
 		aggregatedMsg.UserPKs = append(aggregatedMsg.UserPKs, rawMsg.UserPKs...)
 		aggregatedMsg.IBFVector.UnionInplace(rawMsg.IBFVector)
@@ -148,16 +145,13 @@ func AggregateAggregates(round int, msgs []*Signed[AggregatedClientMessages], au
 }
 
 type ClientMessager struct {
-	Config           *ZIPNetConfig
-	SharedSecrets    map[string]crypto.SharedKey
-	Crypto           CryptoProvider
+	Config        *ZIPNetConfig
+	SharedSecrets map[string]crypto.SharedKey
 }
 
 func (c *ClientMessager) PrepareMessage(currentRound int, previousRoundOutput *Signed[ServerRoundData], previousRoundMessage []byte, currentRoundAuctionData *AuctionData) (*ClientRoundMessage, bool, error) {
-		// TODO: previous round output should be parf of KDF
-
 	shouldSendMessage, messageIndex := func() (bool, int) {
-		if previousRoundOutput == nil || previousRoundOutput.UnsafeObject().RoundNubmer +1 != currentRound {
+		if previousRoundOutput == nil || previousRoundOutput.UnsafeObject().RoundNubmer+1 != currentRound {
 			return false, 0
 		}
 
@@ -180,32 +174,32 @@ func (c *ClientMessager) PrepareMessage(currentRound int, previousRoundOutput *S
 		return ourWeight > topWeight, 0
 	}()
 
-	auctionPad := make([]byte, IBFVectorSize(c.Config.MessageSlots))
-	counterBlinders := make([]uint64, IBFVectorLength(c.Config.MessageSlots))
-	messagePad := make([]byte, c.Config.MessageSize*c.Config.MessageSlots) // TODO: one size for dynamic messages
+	blindingVector := NewBlindingVector(c.Config.MessageSize*c.Config.MessageSlots, c.Config.MessageSlots)
 
-	if shouldSendMessage {
-		crypto.XorInplace(messagePad[messageIndex:messageIndex+len(previousRoundMessage)], previousRoundMessage)
+	var previousRoundAuction *IBFVector = nil
+	if previousRoundOutput != nil {
+		// TODO: we might want to verify
+		previousRoundAuction = previousRoundOutput.UnsafeObject().IBFVector
 	}
-
 	for _, serverKem := range c.SharedSecrets {
-		auctionPrf, messagePrf, err := c.Crypto.KDF(serverKem, uint64(currentRound), []byte{}, len(auctionPad), len(messagePad))
+		err := blindingVector.DeriveInplace(currentRound, serverKem, previousRoundAuction)
 		if err != nil {
 			return nil, false, err
 		}
-		crypto.XorInplace(auctionPad, auctionPrf)
-		crypto.XorInplace(messagePad, messagePrf)
-
-		UnionCounterPadsInplace(counterBlinders, GenCounterBlinders(uint32(currentRound), serverKem.Bytes(), len(counterBlinders)))
 	}
 
 	auctionIBF := NewIBFVector(c.Config.MessageSlots)
 	auctionIBF.InsertChunk(currentRoundAuctionData.EncodeToChunk())
-	auctionIBF.EncryptInplace(auctionPad, counterBlinders)
+	auctionIBF.EncryptInplace(blindingVector.AuctionPad, blindingVector.CountersPad)
+
+	messageVector := blindingVector.MessagePad
+	if shouldSendMessage {
+		crypto.XorInplace(messageVector[messageIndex:messageIndex+len(previousRoundMessage)], previousRoundMessage)
+	}
 
 	return &ClientRoundMessage{
-		RoundNubmer :currentRound,
-		IBFVector : auctionIBF,
-		MessageVector : messagePad,
+		RoundNubmer:   currentRound,
+		IBFVector:     auctionIBF,
+		MessageVector: messageVector,
 	}, shouldSendMessage, nil
 }

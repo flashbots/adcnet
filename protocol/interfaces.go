@@ -17,14 +17,14 @@ type Client interface {
 	// PrepareMessage prepares a message for the current round with auction data.
 	// Returns the prepared message, a boolean indicating if the message should be sent
 	// (based on auction results), and any error.
-	PrepareMessage(ctx context.Context, round int, 
-		previousRoundOutput *Signed[ServerRoundData], 
-		message []byte, 
+	PrepareMessage(ctx context.Context, round int,
+		previousRoundOutput *Signed[ServerRoundData],
+		message []byte,
 		auctionData *AuctionData) (*ClientRoundMessage, bool, error)
 
 	// ProcessRoundData processes the broadcast from the server to extract
 	// messages and auction results.
-	ProcessRoundData(ctx context.Context, round int, 
+	ProcessRoundData(ctx context.Context, round int,
 		roundData *Signed[ServerRoundData]) ([]byte, error)
 
 	// GetTimesParticipated returns the number of times this client has
@@ -72,12 +72,12 @@ type Server interface {
 
 	// UnblindAggregate creates a partial decryption by removing this server's
 	// blinding factors from an aggregated message.
-	UnblindAggregate(ctx context.Context, 
+	UnblindAggregate(ctx context.Context,
 		aggregate *Signed[AggregatedClientMessages]) (*Signed[ServerPartialDecryptionMessage], error)
 
 	// DeriveRoundOutput combines unblinded shares from all anytrust servers
 	// to produce the final broadcast message with auction results.
-	DeriveRoundOutput(ctx context.Context, 
+	DeriveRoundOutput(ctx context.Context,
 		shares []*ServerPartialDecryptionMessage) (*Signed[ServerRoundData], error)
 
 	// GetPublicKey returns the server's public key.
@@ -85,31 +85,6 @@ type Server interface {
 
 	// IsLeader returns whether this server is the leader.
 	IsLeader() bool
-}
-
-// CryptoProvider defines the interface for cryptographic operations required
-// by the ZIPNet protocol.
-type CryptoProvider interface {
-	// DeriveSharedSecret derives a shared secret between two parties.
-	DeriveSharedSecret(privateKey crypto.PrivateKey,
-		otherPublicKey crypto.PublicKey) (crypto.SharedKey, error)
-
-	// KDF derives keys from a master key for IBF and message vectors.
-	KDF(masterKey crypto.SharedKey, round uint64,
-		context []byte, ibfPadLength, msgVecPadLength int) ([]byte, []byte, error)
-
-	// Sign signs data with a private key.
-	Sign(privateKey crypto.PrivateKey, data []byte) (crypto.Signature, error)
-
-	// Verify verifies a signature using a public key.
-	Verify(publicKey crypto.PublicKey, data []byte,
-		signature crypto.Signature) error
-
-	// Hash computes a cryptographic hash of data.
-	Hash(data []byte) (crypto.Hash, error)
-
-	// RatchetKey rotates a key for forward secrecy.
-	RatchetKey(key crypto.SharedKey) (crypto.SharedKey, error)
 }
 
 // NetworkTransport defines the interface for network communication between

@@ -59,7 +59,7 @@ func (s *Signed[T]) Recover() (*T, crypto.PublicKey, error) {
 
 type AuctionData struct {
 	MessageHash crypto.Hash
-	Weight int
+	Weight      int
 }
 
 func (a *AuctionData) EncodeToChunk() [IBFChunkSize]byte {
@@ -81,16 +81,15 @@ func AuctionDataFromChunk(chunk [IBFChunkSize]byte) *AuctionData {
 func AuctionDataFromMessage(msg []byte, weight int) *AuctionData {
 	return &AuctionData{
 		MessageHash: sha256.Sum256(msg),
-		Weight: weight,
+		Weight:      weight,
 	}
 }
-
 
 type MessageVector = []byte
 
 type ClientRoundData struct {
-	RoundNubmer int
-	IBFVector IBFVector
+	RoundNubmer   int
+	IBFVector     IBFVector
 	MessageVector MessageVector
 }
 
@@ -104,10 +103,9 @@ func (c *ClientRoundData) Decrypt(ibfVectorPad []byte, msgVectorPad []byte) *Cli
 	return nil
 }
 
-
 type ClientRoundMessage struct {
-	RoundNubmer int
-	IBFVector *IBFVector
+	RoundNubmer   int
+	IBFVector     *IBFVector
 	MessageVector MessageVector
 }
 
@@ -116,10 +114,10 @@ func (*IBFVector) Unblind() {
 }
 
 type AggregatedClientMessages struct {
-	RoundNubmer int
-	IBFVector *IBFVector
+	RoundNubmer   int
+	IBFVector     *IBFVector
 	MessageVector MessageVector
-	UserPKs []crypto.PublicKey
+	UserPKs       []crypto.PublicKey
 }
 
 func (m *AggregatedClientMessages) AggregateClientMessages(msgs []*Signed[ClientRoundMessage]) *AggregatedClientMessages {
@@ -132,10 +130,8 @@ func (m *AggregatedClientMessages) AggregateAggregates(msgs []*AggregatedClientM
 
 type ServerPartialDecryptionMessage struct {
 	OriginalAggregate AggregatedClientMessages
-	UserPKs []crypto.PublicKey
-	SchedulingPad []byte
-	MessagePad []byte
-	CounterBlinder []uint64
+	UserPKs           []crypto.PublicKey
+	BlindingVector    *BlindingVector
 }
 
 func UnblindAggregates(msgs []*AggregatedClientMessages, ibfVectorPad []byte, msgVectorPad []byte) *ServerPartialDecryptionMessage {
@@ -143,8 +139,8 @@ func UnblindAggregates(msgs []*AggregatedClientMessages, ibfVectorPad []byte, ms
 }
 
 type ServerRoundData struct {
-	RoundNubmer int
-	IBFVector *IBFVector
+	RoundNubmer   int
+	IBFVector     *IBFVector
 	MessageVector MessageVector
 }
 
