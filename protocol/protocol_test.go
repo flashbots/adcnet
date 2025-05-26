@@ -10,9 +10,9 @@ import (
 
 // TODO: test packing multiple messages!
 
-// TestZIPNetRoutinesE2E tests the core protocol routines in a simple end-to-end flow
+// TestADCNetRoutinesE2E tests the core protocol routines in a simple end-to-end flow
 // covering two rounds of the protocol to demonstrate the auction mechanism.
-func TestZIPNetRoutinesE2E(t *testing.T) {
+func TestADCNetRoutinesE2E(t *testing.T) {
 	// =========================================================================
 	// Setup test infrastructure
 	// =========================================================================
@@ -29,7 +29,7 @@ func TestZIPNetRoutinesE2E(t *testing.T) {
 	}
 
 	// Create test config
-	config := &ZIPNetConfig{
+	config := &ADCNetConfig{
 		MessageSlots: 10,
 		MessageSize:  60, // Small enough that only one message fits
 	}
@@ -99,7 +99,7 @@ func TestZIPNetRoutinesE2E(t *testing.T) {
 
 	// Aggregate client messages (simulating aggregator)
 	clientMsgs := []*Signed[ClientRoundMessage]{signedClient1Msg, signedClient2Msg}
-	aggregatedMsg, err := AggregateClientMessages(1, clientMsgs, authorizedClients)
+	aggregatedMsg, err := (&AggregatorMessager{Config: config}).AggregateClientMessages(1, clientMsgs, authorizedClients)
 	require.NoError(t, err)
 
 	// Sign aggregated message
@@ -175,7 +175,7 @@ func TestZIPNetRoutinesE2E(t *testing.T) {
 	require.NoError(t, err)
 
 	// Aggregate client messages for round 2
-	aggregatedMsg2, err := AggregateClientMessages(2, []*Signed[ClientRoundMessage]{signedClient1Msg2, signedClient2Msg2}, authorizedClients)
+	aggregatedMsg2, err := (&AggregatorMessager{Config: config}).AggregateClientMessages(2, []*Signed[ClientRoundMessage]{signedClient1Msg2, signedClient2Msg2}, authorizedClients)
 	require.NoError(t, err)
 
 	// Sign aggregated message
@@ -210,5 +210,5 @@ func TestZIPNetRoutinesE2E(t *testing.T) {
 	assert.Contains(t, recoveredEntries2, client2AuctionDataRound2.EncodeToChunk())
 
 	// Check client1 correctly inserted their message
-	assert.Equal(t, client1Message, round2Output.MessageVector[0:len(client1Message)])
+	assert.Equal(t, MessageVector(client1Message), round2Output.MessageVector[0:len(client1Message)])
 }

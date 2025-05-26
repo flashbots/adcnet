@@ -13,6 +13,7 @@ const IBFNChunks int = 3 // TODO: rename to levels
 const IBFShrinkFactor float64 = 0.75
 const IBFChunkSize uint32 = 48
 
+// IBFVectorLength calculates the total number of buckets across all IBF levels.
 func IBFVectorLength(nBuckets uint32) int {
 	n := 0
 	fac := 1.0
@@ -23,15 +24,20 @@ func IBFVectorLength(nBuckets uint32) int {
 	return n
 }
 
+// IBFVectorSize calculates the total byte size of an IBF vector.
 func IBFVectorSize(nBuckets uint32) uint32 {
 	return uint32(IBFVectorLength(nBuckets)) * IBFChunkSize
 }
 
+// IBFVector implements an Invertible Bloom Filter for auction data.
+// Recovery success depends on collision probability.
+// No integrity protection; vulnerable to bit manipulation.
 type IBFVector struct {
 	Chunks   [IBFNChunks][][IBFChunkSize]byte
 	Counters [IBFNChunks][]uint64
 }
 
+// String returns a human-readable representation of the IBF.
 func (v *IBFVector) String() string {
 	res := ""
 	for level := range v.Chunks {
@@ -46,6 +52,7 @@ func (v *IBFVector) String() string {
 	return res
 }
 
+// NewIBFVector creates a new IBF with the specified number of message slots.
 func NewIBFVector(messageSlots uint32) *IBFVector {
 	res := &IBFVector{}
 
@@ -60,17 +67,23 @@ func NewIBFVector(messageSlots uint32) *IBFVector {
 	return res
 }
 
-func (v *IBFVector) InsertChunk(msg [IBFChunkSize]byte) {
-	for level := 0; level < IBFNChunks; level++ {
-		dataToHash := append([]byte(fmt.Sprintf("%d", level)), msg[:]...)
-		indexSeed := sha256.Sum256(dataToHash)
-		index := uint64(binary.BigEndian.Uint64(indexSeed[0:8])) % uint64(len(v.Chunks[level]))
+// Clone creates a deep copy of the IBF vector.
+func (v *IBFVector) Clone() *IBFVector {
+	newCopy := &IBFVector{}
+	for level := range v.Chunks {
+		newCopy.Counters[level] = make([]uint64, len(v.Counters[level]))
+		copy(newCopy.Counters[level], v.Counters[level])
 
-		crypto.XorInplace(v.Chunks[level][index][:], msg[:])
-		v.Counters[level][index] += 1
+		newCopy.Chunks[level] = make([][IBFChunkSize]byte, len(v.Chunks[level]))
+		for i := range v.Chunks[level] {
+			copy(newCopy.Chunks[level][i][:], v.Chunks[level][i][:])
+		}
 	}
+
+	return newCopy
 }
 
+// Bytes serializes the IBF vector to a byte slice.
 func (v *IBFVector) Bytes() []byte {
 	res := binary.BigEndian.AppendUint32([]byte{}, uint32(len(v.Chunks)))
 	res = binary.BigEndian.AppendUint32(res, uint32(len(v.Chunks[0])))
@@ -89,6 +102,19 @@ func (v *IBFVector) Bytes() []byte {
 	return res
 }
 
+// InsertChunk inserts a chunk into the IBF at appropriate positions across all levels.
+func (v *IBFVector) InsertChunk(msg [IBFChunkSize]byte) {
+	for level := 0; level < IBFNChunks; level++ {
+		dataToHash := append([]byte(fmt.Sprintf("%d", level)), msg[:]...)
+		indexSeed := sha256.Sum256(dataToHash)
+		index := uint64(binary.BigEndian.Uint64(indexSeed[0:8])) % uint64(len(v.Chunks[level]))
+
+		crypto.XorInplace(v.Chunks[level][index][:], msg[:])
+		v.Counters[level][index] += 1
+	}
+}
+
+// EncryptInplace encrypts the IBF in place using provided pads.
 func (v *IBFVector) EncryptInplace(ibfVectorPad AuctionPad, counterBlinders CountersPad) {
 	index := uint32(0)
 	for level := range v.Chunks {
@@ -110,28 +136,8 @@ func (v *IBFVector) EncryptInplace(ibfVectorPad AuctionPad, counterBlinders Coun
 	}
 }
 
-func (v *IBFVector) Clone() *IBFVector {
-	newCopy := &IBFVector{}
-	for level := range v.Chunks {
-		newCopy.Counters[level] = make([]uint64, len(v.Counters[level]))
-		copy(newCopy.Counters[level], v.Counters[level])
-
-		newCopy.Chunks[level] = make([][IBFChunkSize]byte, len(v.Chunks[level]))
-		for i := range v.Chunks[level] {
-			copy(newCopy.Chunks[level][i][:], v.Chunks[level][i][:])
-		}
-	}
-
-	return newCopy
-}
-
-func (v *IBFVector) Encrypt(ibfVectorPad []byte, counterBlinders CountersPad) *IBFVector {
-	res := v.Clone()
-	res.EncryptInplace(ibfVectorPad, counterBlinders)
-	return res
-}
-
-func (v *IBFVector) DecryptInplace(ibfVectorPad []byte, counterBlinders CountersPad) {
+// DecryptInplace decrypts the IBF in place using provided pads.
+func (v *IBFVector) DecryptInplace(ibfVectorPad []byte, counterBlinders CountersPad) *IBFVector {
 	index := uint32(0)
 	for level := range v.Chunks {
 		for chunk := range v.Chunks[level] {
@@ -148,31 +154,24 @@ func (v *IBFVector) DecryptInplace(ibfVectorPad []byte, counterBlinders Counters
 			counterPadIndex += 1
 		}
 	}
+
+	return v
 }
 
-func (v *IBFVector) Decrypt(ibfVectorPad []byte, counterBlinders CountersPad) *IBFVector {
-	// TODO: deep copy
-	res := &(*v)
-	res.DecryptInplace(ibfVectorPad, counterBlinders)
-	return res
-}
-
-func (v *IBFVector) UnionInplace(other *IBFVector) {
+// UnionInplace merges another IBF into this one by XORing chunks and adding counters.
+func (v *IBFVector) UnionInplace(other *IBFVector) *IBFVector {
 	for level := range v.Counters {
 		for chunk := range v.Chunks[level] {
 			crypto.XorInplace(v.Chunks[level][chunk][:], other.Chunks[level][chunk][:])
 			v.Counters[level][chunk] = AddBlindedCounters(v.Counters[level][chunk], other.Counters[level][chunk])
 		}
 	}
+
+	return v
 }
 
-func (v *IBFVector) Union(other *IBFVector) *IBFVector {
-	// TODO: deep copy
-	res := &(*v)
-	res.UnionInplace(other)
-	return res
-}
-
+// Recover attempts to extract all elements from the IBF.
+// No guarantee of complete recovery or detection of missing elements.
 func (v *IBFVector) Recover() [][IBFChunkSize]byte {
 	// Create a copy of the IBF to work with during recovery
 	// so we don't modify the original

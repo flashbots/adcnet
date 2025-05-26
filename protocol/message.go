@@ -8,12 +8,16 @@ import (
 	"github.com/flashbots/adcnet/crypto"
 )
 
+// Signed provides authentication for protocol messages.
+// Security: Uses Ed25519 signatures. Assumes private keys are secure.
+// Note: Signature covers serialized object + public key to prevent substitution.
 type Signed[T any] struct {
 	PublicKey crypto.PublicKey `json:"public_key"`
 	Signature crypto.Signature `json:"signature"`
 	Object    *T               `json:"object"`
 }
 
+// NewSigned creates a signed message.
 func NewSigned[T any](privkey crypto.PrivateKey, obj *T) (*Signed[T], error) {
 	pubkey, err := privkey.PublicKey()
 	if err != nil {
@@ -37,10 +41,12 @@ func NewSigned[T any](privkey crypto.PrivateKey, obj *T) (*Signed[T], error) {
 	}, nil
 }
 
+// UnsafeObject returns the object without signature verification.
 func (s *Signed[T]) UnsafeObject() *T {
 	return s.Object
 }
 
+// Recover verifies the signature and returns the object and signer's public key.
 func (s *Signed[T]) Recover() (*T, crypto.PublicKey, error) {
 	serializedData, err := SerializeMessage(s.Object)
 	if err != nil {
@@ -55,14 +61,16 @@ func (s *Signed[T]) Recover() (*T, crypto.PublicKey, error) {
 	return s.Object, s.PublicKey, nil
 }
 
-type MessageVector = []byte
+type MessageVector []byte
 
+// ClientRoundMessage contains a client's encrypted message and auction bid for a round.
 type ClientRoundMessage struct {
 	RoundNubmer   int
 	IBFVector     *IBFVector
 	MessageVector MessageVector
 }
 
+// AggregatedClientMessages contains aggregated messages from multiple clients.
 type AggregatedClientMessages struct {
 	RoundNubmer   int
 	IBFVector     *IBFVector
@@ -70,12 +78,14 @@ type AggregatedClientMessages struct {
 	UserPKs       []crypto.PublicKey
 }
 
+// ServerPartialDecryptionMessage contains a server's partial decryption share.
 type ServerPartialDecryptionMessage struct {
 	OriginalAggregate AggregatedClientMessages
 	UserPKs           []crypto.PublicKey
 	BlindingVector    *BlindingVector
 }
 
+// ServerRoundData contains the final decrypted round output.
 type ServerRoundData struct {
 	RoundNubmer   int
 	IBFVector     *IBFVector
@@ -110,34 +120,21 @@ type ServerRegistrationBlob struct {
 	IsLeader bool `json:"is_leader"`
 }
 
-// UnmarshalMessage converts bytes to a message object
-// This function uses JSON deserialization, which is not optimized for performance
-// but provides good compatibility and debugging capabilities.
-//
-// Parameters:
-// - data: The serialized message bytes
-//
-// Returns the deserialized message and any error that occurred.
+// UnmarshalMessage deserializes a message from JSON bytes.
 func UnmarshalMessage[T any](data []byte) (*T, error) {
 	var msg T
 	err := json.Unmarshal(data, &msg)
 	return &msg, err
 }
 
+// DecodeMessage deserializes a message from a JSON reader.
 func DecodeMessage[T any](reader io.Reader) (*T, error) {
 	var msg T
 	err := json.NewDecoder(reader).Decode(&msg)
 	return &msg, err
 }
 
-// SerializeMessage converts a message object to bytes
-// This function uses JSON serialization, which is not optimized for performance
-// but provides good compatibility and debugging capabilities.
-//
-// Parameters:
-// - msg: The message to serialize
-//
-// Returns the serialized bytes and any error that occurred.
+// SerializeMessage serializes a message to JSON bytes.
 func SerializeMessage[T any](msg *T) ([]byte, error) {
 	return json.Marshal(msg)
 }

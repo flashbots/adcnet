@@ -6,14 +6,13 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"slices"
 )
 
 // Hash represents a cryptographic hash value using SHA-256 (32 bytes).
-// It's used throughout ZIPNet for deriving identifiers, computing message
+// It's used throughout ADCNet for deriving identifiers, computing message
 // digests, and as part of various cryptographic operations.
 type Hash [32]byte
 
@@ -45,7 +44,7 @@ func (h Hash) String() string {
 }
 
 // PublicKey represents a public key used for authentication and encryption.
-// In ZIPNet, public keys are used to verify signatures and as client/server identifiers.
+// In ADCNet, public keys are used to verify signatures and as client/server identifiers.
 // The implementation uses Ed25519 public keys.
 type PublicKey []byte
 
@@ -85,7 +84,7 @@ func (pk PublicKey) String() string {
 }
 
 // PrivateKey represents a private key used for signing and key exchange.
-// In ZIPNet, private keys should be kept secure and are only used by their owners.
+// In ADCNet, private keys should be kept secure and are only used by their owners.
 // The implementation uses Ed25519 private keys.
 type PrivateKey []byte
 
@@ -115,7 +114,7 @@ func (sk PrivateKey) PublicKey() (PublicKey, error) {
 }
 
 // GenerateKeyPair generates a new Ed25519 key pair for signing and verification.
-// The generated keys are cryptographically secure for use in the ZIPNet protocol.
+// The generated keys are cryptographically secure for use in the ADCNet protocol.
 // Returns the public key, private key, and any error that occurred during generation.
 func GenerateKeyPair() (PublicKey, PrivateKey, error) {
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
@@ -126,7 +125,7 @@ func GenerateKeyPair() (PublicKey, PrivateKey, error) {
 }
 
 // Signature represents a digital signature produced with a private key.
-// In ZIPNet, signatures are used to authenticate messages from clients,
+// In ADCNet, signatures are used to authenticate messages from clients,
 // aggregators, and servers.
 type Signature []byte
 
@@ -146,7 +145,7 @@ func (s Signature) Bytes() []byte {
 
 // Verify checks if this signature is valid for the given data and public key.
 // Returns true if the signature is valid, false otherwise.
-// This is used to verify the authenticity of messages in the ZIPNet protocol.
+// This is used to verify the authenticity of messages in the ADCNet protocol.
 func (s Signature) Verify(publicKey PublicKey, data []byte) bool {
 	return ed25519.Verify(ed25519.PublicKey(publicKey), data, s)
 }
@@ -159,7 +158,7 @@ func (s Signature) String() string {
 
 // Sign signs data with the given private key using Ed25519.
 // Returns the signature and any error that occurred during signing.
-// In ZIPNet, this is used by clients, aggregators, and servers to sign their messages.
+// In ADCNet, this is used by clients, aggregators, and servers to sign their messages.
 func Sign(privateKey PrivateKey, data []byte) (Signature, error) {
 	if len(privateKey) != ed25519.PrivateKeySize {
 		return nil, errors.New("invalid private key size")
@@ -168,10 +167,10 @@ func Sign(privateKey PrivateKey, data []byte) (Signature, error) {
 	return Signature(signature), nil
 }
 
-// SharedKey represents a shared secret between two parties, typically
-// derived using Diffie-Hellman key exchange.
-// In ZIPNet, shared keys are established between clients and servers
-// to derive one-time pads for blinding messages.
+// SharedKey represents Diffie-Hellman shared secret.
+// Security: Must have ≥128 bits entropy. Must always be derived from,
+// never used as-is.
+// Current implementation doesn't enforce minimum entropy.
 type SharedKey []byte
 
 // NewSharedKey creates a SharedKey from a byte slice.
@@ -186,90 +185,6 @@ func NewSharedKey(data []byte) SharedKey {
 // This is useful when the key needs to be used in cryptographic operations.
 func (sk SharedKey) Bytes() []byte {
 	return slices.Clone(sk)
-}
-
-// Ratchet derives a new key from this shared key for forward secrecy.
-// In ZIPNet, keys are ratcheted after each round to prevent compromise
-// of past communications if a key is later compromised.
-// Returns the ratcheted key and any error that occurred during derivation.
-func (sk SharedKey) Ratchet() (SharedKey, error) {
-	hash := sha256.Sum256(sk)
-	return NewSharedKey(hash[:]), nil
-}
-
-// Nonce is a cryptographic nonce used for rate limiting in the ZIPNet protocol.
-// Clients generate unique nonces for each message to prevent replay and DoS attacks.
-// Each nonce should be used only once within a rate limiting window.
-type Nonce []byte
-
-// NewNonce creates a Nonce from a byte slice.
-func NewNonce(data []byte) Nonce {
-	return Nonce(data)
-}
-
-// Bytes returns the nonce as a byte slice.
-func (n Nonce) Bytes() []byte {
-	return []byte(n)
-}
-
-// Equal compares two nonces for equality.
-// Two nonces are equal if they contain exactly the same bytes.
-func (n Nonce) Equal(other Nonce) bool {
-	return bytes.Equal(n, other)
-}
-
-// String returns a base64-encoded string representation of the nonce.
-// This is useful for logging and debugging.
-func (n Nonce) String() string {
-	if len(n) == 0 {
-		return ""
-	}
-	return base64.StdEncoding.EncodeToString(n)
-}
-
-// GenerateNonce creates a new random nonce of 16 bytes.
-// The generated nonce is cryptographically secure and suitable
-// for rate limiting in the ZIPNet protocol.
-func GenerateNonce() (Nonce, error) {
-	nonceBytes := make([]byte, 16)
-	_, err := rand.Read(nonceBytes)
-	if err != nil {
-		return nil, err
-	}
-	return NewNonce(nonceBytes), nil
-}
-
-// Footprint represents a scheduling footprint in the ZIPNet protocol.
-// Footprints are used in slot reservation to detect collisions when
-// multiple clients attempt to reserve the same slot.
-type Footprint []byte
-
-// NewFootprint creates a Footprint from a byte slice.
-// This function makes a copy of the input data to ensure immutability.
-func NewFootprint(data []byte) Footprint {
-	fp := make([]byte, len(data))
-	copy(fp, data)
-	return Footprint(fp)
-}
-
-// Bytes returns the footprint as a byte slice.
-func (fp Footprint) Bytes() []byte {
-	return fp
-}
-
-// Equal compares two footprints for equality.
-// Two footprints are equal if they contain exactly the same bytes.
-func (fp Footprint) Equal(other Footprint) bool {
-	return bytes.Equal(fp, other)
-}
-
-// String returns a base64-encoded string representation of the footprint.
-// This is useful for logging and debugging.
-func (fp Footprint) String() string {
-	if len(fp) == 0 {
-		return ""
-	}
-	return base64.StdEncoding.EncodeToString(fp)
 }
 
 func Xor(data []byte, key []byte) []byte {

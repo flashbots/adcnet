@@ -15,7 +15,7 @@ import (
 	"github.com/flashbots/adcnet/crypto"
 )
 
-// InMemoryTEE implements the zipnet.TEE interface for testing purposes.
+// InMemoryTEE implements the protocol.TEE interface for testing purposes.
 // This implementation simulates a TEE by keeping secrets in memory, but
 // does not provide actual hardware security guarantees.
 type InMemoryTEE struct {

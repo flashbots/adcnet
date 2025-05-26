@@ -175,7 +175,7 @@ func TestIBFUnion(t *testing.T) {
 	ibf2.EncryptInplace(pad2, counterPads2)
 
 	// Combine the IBFs
-	combined := ibf1.Union(ibf2)
+	combined := ibf1.UnionInplace(ibf2)
 
 	combinedCounterPads := make([]uint64, len(counterPads1))
 	UnionCounterPadsInplace(combinedCounterPads, counterPads1)
@@ -253,7 +253,8 @@ func TestCountersE2E(t *testing.T) {
 	client2server1counterBlinders2, _ := GenCounterBlinders(client2server1SharedKey, nCounters)
 	UnionCounterPadsInplace(serverCounterBlinders, client2server1counterBlinders2)
 
-	unblindedAuction := serverIBFVector.Decrypt(auctionPad, serverCounterBlinders)
+	unblindedAuction := serverIBFVector.Clone()
+	unblindedAuction.DecryptInplace(auctionPad, serverCounterBlinders)
 	chunks := unblindedAuction.Recover()
 	require.Equal(t, 2, len(chunks))
 

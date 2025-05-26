@@ -7,8 +7,9 @@ import (
 	"github.com/flashbots/adcnet/crypto"
 )
 
-// Client defines the interface for a ZIPNet client that participates in the
-// anonymous broadcast network by sending messages with auction-based scheduling.
+// Client participates in anonymous broadcast with auction-based scheduling.
+// Security: Assumes TEE for DoS prevention only, not for privacy.
+// Privacy depends on honest aggregators and at least one honest server.
 type Client interface {
 	// RegisterServerPublicKey registers a server's public key and establishes
 	// a shared secret with that server using Diffie-Hellman key exchange.
@@ -35,7 +36,7 @@ type Client interface {
 	GetPublicKey() crypto.PublicKey
 }
 
-// Aggregator defines the interface for a ZIPNet aggregator that collects and
+// Aggregator defines the interface for an ADCNet aggregator that collects and
 // combines client messages before forwarding to anytrust servers.
 type Aggregator interface {
 	// ReceiveClientMessage processes a message from a client.
@@ -57,8 +58,9 @@ type Aggregator interface {
 	GetLevel() uint32
 }
 
-// Server defines the interface for a ZIPNet anytrust server that provides
-// anonymity guarantees for the broadcast network.
+// Server provides anonymity in anytrust model.
+// Security: System remains private if at least one server is honest.
+// Assumption: Servers don't collude to break anonymity.
 type Server interface {
 	// RegisterClient establishes a shared secret with a client after verifying
 	// their TEE attestation.
@@ -88,7 +90,7 @@ type Server interface {
 }
 
 // NetworkTransport defines the interface for network communication between
-// ZIPNet components.
+// ADCNet components.
 type NetworkTransport interface {
 	// SendToAggregator sends a client message to an aggregator.
 	SendToAggregator(ctx context.Context, aggregatorID string,
@@ -116,7 +118,9 @@ type NetworkTransport interface {
 	RegisterMessageHandler(handler func([]byte) error) error
 }
 
-// TEE defines the interface for a Trusted Execution Environment.
+// TEE interface for Trusted Execution Environment operations.
+// Used only for DoS prevention, rate limiting, and auction integrity.
+// TEE compromise affects liveness, not privacy.
 type TEE interface {
 	// Attest produces an attestation of the code running in the TEE.
 	Attest() ([]byte, error)
@@ -137,8 +141,8 @@ type TEE interface {
 	Sign(data []byte) (crypto.Signature, error)
 }
 
-// ZIPNetConfig provides configuration parameters for ZIPNet components.
-type ZIPNetConfig struct {
+// ADCNetConfig provides configuration parameters for ADCNet components.
+type ADCNetConfig struct {
 	// RoundDuration is the time duration of each protocol round.
 	RoundDuration time.Duration
 

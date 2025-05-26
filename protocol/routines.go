@@ -8,10 +8,13 @@ import (
 )
 
 type ServerMessager struct {
-	Config        *ZIPNetConfig
+	Config        *ADCNetConfig
 	SharedSecrets map[string]crypto.SharedKey
 }
 
+// UnblindAggregates creates partial decryption of aggregated messages.
+// Assumes all client shared secrets are established and fresh.
+// No verification of message integrity before processing.
 func (s *ServerMessager) UnblindAggregates(currentRound int, msgs []*Signed[AggregatedClientMessages], allowedAggregators map[string]bool, previousRoundAuction *IBFVector) (*ServerPartialDecryptionMessage, error) {
 	unifiedAggregate := AggregatedClientMessages{
 		RoundNubmer:   currentRound,
@@ -76,19 +79,22 @@ func (s *ServerMessager) UnblindPartialMessages(msgs []*Signed[ServerPartialDecr
 
 	unblindedMessage := ServerRoundData{
 		RoundNubmer:   originalAggregate.RoundNubmer,
-		IBFVector:     originalAggregate.IBFVector.Decrypt(blindingVector.AuctionPad, blindingVector.CountersPad),
+		IBFVector:     originalAggregate.IBFVector.Clone().DecryptInplace(blindingVector.AuctionPad, blindingVector.CountersPad),
 		MessageVector: crypto.Xor(originalAggregate.MessageVector, blindingVector.MessagePad),
 	}
 
 	return &unblindedMessage, nil
 }
 
-func AggregateClientMessages(round int, msgs []*Signed[ClientRoundMessage], authorizedClients map[string]bool) (*AggregatedClientMessages, error) {
+type AggregatorMessager struct {
+	Config        *ADCNetConfig
+}
+
+func (a *AggregatorMessager) AggregateClientMessages(round int, msgs []*Signed[ClientRoundMessage], authorizedClients map[string]bool) (*AggregatedClientMessages, error) {
 	aggregatedMsg := AggregatedClientMessages{
 		RoundNubmer: round,
-		// TODO: initialize use Config instead
-		IBFVector:     NewIBFVector(uint32(len(msgs[0].UnsafeObject().IBFVector.Chunks[0]))),
-		MessageVector: make([]byte, len(msgs[0].UnsafeObject().MessageVector)),
+		IBFVector:     NewIBFVector(a.Config.MessageSlots),
+		MessageVector: make([]byte, a.Config.MessageSize),
 	}
 
 	for _, msg := range msgs {
@@ -115,7 +121,7 @@ func AggregateClientMessages(round int, msgs []*Signed[ClientRoundMessage], auth
 	return &aggregatedMsg, nil
 }
 
-func AggregateAggregates(round int, msgs []*Signed[AggregatedClientMessages], authorizedAggregators map[string]bool) (*AggregatedClientMessages, error) {
+func (a *AggregatorMessager) AggregateAggregates(round int, msgs []*Signed[AggregatedClientMessages], authorizedAggregators map[string]bool) (*AggregatedClientMessages, error) {
 	aggregatedMsg := AggregatedClientMessages{
 		RoundNubmer: round,
 	}
@@ -148,10 +154,11 @@ func AggregateAggregates(round int, msgs []*Signed[AggregatedClientMessages], au
 }
 
 type ClientMessager struct {
-	Config        *ZIPNetConfig
+	Config        *ADCNetConfig
 	SharedSecrets map[string]crypto.SharedKey
 }
 
+// PrepareMessage creates encrypted message with auction data.
 func (c *ClientMessager) PrepareMessage(currentRound int, previousRoundOutput *Signed[ServerRoundData], previousRoundMessage []byte, currentRoundAuctionData *AuctionData) (*ClientRoundMessage, bool, error) {
 
 	// Note that messages must be salted (random prefix).

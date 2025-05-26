@@ -8,15 +8,19 @@ import (
 	"github.com/flashbots/adcnet/crypto"
 )
 
-type AuctionPad = []byte
-type CountersPad = []uint64
+type AuctionPad []byte
+type CountersPad []uint64
 
+// BlindingVector contains one-time pads for message and auction data encryption.
+// Assumes secure shared key establishment and unique round/key combinations.
+// Provides confidentiality only, no authentication.
 type BlindingVector struct {
 	MessagePad  MessageVector
 	AuctionPad  AuctionPad
 	CountersPad CountersPad
 }
 
+// NewBlindingVector creates a new blinding vector with specified sizes.
 func NewBlindingVector(msgSize uint32, auctionBuckets uint32) *BlindingVector {
 	return &BlindingVector{
 		MessagePad:  make([]byte, msgSize),
@@ -25,12 +29,16 @@ func NewBlindingVector(msgSize uint32, auctionBuckets uint32) *BlindingVector {
 	}
 }
 
+// UnionInplace merges another blinding vector into this one.
 func (b *BlindingVector) UnionInplace(other *BlindingVector) {
 	crypto.XorInplace(b.AuctionPad, other.AuctionPad)
 	crypto.XorInplace(b.MessagePad, other.MessagePad)
 	UnionCounterPadsInplace(b.CountersPad, other.CountersPad)
 }
 
+// DeriveInplace derives blinding pads from shared secrets, and applies them.
+// Uses HKDF-SHA256. Assumes sharedKey has sufficient entropy.
+// Deterministic - same inputs produce same pads.
 func (b *BlindingVector) DeriveInplace(round int, sharedKey crypto.SharedKey, previousRoundAuction *IBFVector) error {
 	roundSalt := binary.BigEndian.AppendUint32(sharedKey.Bytes(), uint32(round))
 	if previousRoundAuction != nil {
@@ -59,6 +67,7 @@ func (b *BlindingVector) DeriveInplace(round int, sharedKey crypto.SharedKey, pr
 	return nil
 }
 
+// GenCounterBlinders generates field elements for counter blinding.
 func GenCounterBlinders(roundSalt []byte, length int) (CountersPad, error) {
 	elements := []uint64{}
 	counterPad, err := hkdf.Key(sha256.New, append(roundSalt, "counters"...), nil, "", length*8)
@@ -79,19 +88,22 @@ func GenCounterBlinders(roundSalt []byte, length int) (CountersPad, error) {
 // Note: field is small, and a motivated adversary could brute-force it after some observation.
 const CounterFieldSize uint64 = 0xFFFFFFFFFFFFFFFB // 2^64 - 5, a prime number
 
-// BlindCounter blinds a counter using a random pad
+// BlindCounter blinds a counter value using modular addition.
+// Vulnerable to statistical analysis over multiple rounds!
+// TODO: Replace with Pedersen commitments or other secure scheme.
 func BlindCounter(counter uint64, pad uint64) uint64 {
 	// Convert counter to unsigned and compute in the field
 	return (counter + pad) % CounterFieldSize
 }
 
+// UnionCounterPadsInplace merges counter pads using field addition.
 func UnionCounterPadsInplace(pads1 CountersPad, pads2 CountersPad) {
 	for i := range pads1 {
 		pads1[i] = (pads1[i] + pads2[i]) % CounterFieldSize
 	}
 }
 
-// UnblindCounter removes the blinding from a counter
+// UnblindCounter removes the blinding from a counter.
 func UnblindCounter(blindedCounter uint64, pad uint64) int {
 	// Compute (blinded - pad) mod p
 	// Add p before subtracting to avoid underflow
@@ -99,7 +111,7 @@ func UnblindCounter(blindedCounter uint64, pad uint64) int {
 	return int(result)
 }
 
-// Add two blinded counters together
+// AddBlindedCounters adds two blinded counters in the field.
 func AddBlindedCounters(a, b uint64) uint64 {
 	return (a + b) % CounterFieldSize
 }
