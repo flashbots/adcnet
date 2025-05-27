@@ -36,7 +36,7 @@ func NewMockClient(publicKey crypto.PublicKey, nSlots uint32) *MockClient {
 			}
 
 			return &ClientRoundMessage{
-				RoundNubmer:   round,
+				RoundNumber:   round,
 				AuctionVector: ibfVector,
 				MessageVector: make([]byte, 16000), // Default size
 			}, true, nil

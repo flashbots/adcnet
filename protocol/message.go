@@ -66,14 +66,14 @@ type MessageVector []byte
 
 // ClientRoundMessage contains a client's encrypted message and auction bid for a round.
 type ClientRoundMessage struct {
-	RoundNubmer   int
+	RoundNumber   int
 	AuctionVector *blind_auction.IBFVector
 	MessageVector MessageVector
 }
 
 // AggregatedClientMessages contains aggregated messages from multiple clients.
 type AggregatedClientMessages struct {
-	RoundNubmer   int
+	RoundNumber   int
 	AuctionVector *blind_auction.IBFVector
 	MessageVector MessageVector
 	UserPKs       []crypto.PublicKey
@@ -88,7 +88,7 @@ type ServerPartialDecryptionMessage struct {
 
 // ServerRoundData contains the final decrypted round output.
 type ServerRoundData struct {
-	RoundNubmer   int
+	RoundNumber   int
 	AuctionVector *blind_auction.IBFVector
 	MessageVector MessageVector
 }

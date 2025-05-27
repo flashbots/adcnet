@@ -18,7 +18,7 @@ type ServerMessager struct {
 // No verification of message integrity before processing.
 func (s *ServerMessager) UnblindAggregates(currentRound int, msgs []*Signed[AggregatedClientMessages], allowedAggregators map[string]bool, previousRoundAuction *blind_auction.IBFVector) (*ServerPartialDecryptionMessage, error) {
 	unifiedAggregate := AggregatedClientMessages{
-		RoundNubmer:   currentRound,
+		RoundNumber:   currentRound,
 		AuctionVector: blind_auction.NewIBFVector(s.Config.AuctionSlots),
 		MessageVector: make([]byte, s.Config.MessageSize),
 	}
@@ -31,8 +31,8 @@ func (s *ServerMessager) UnblindAggregates(currentRound int, msgs []*Signed[Aggr
 			return nil, fmt.Errorf("unauthorized aggregator %s", signer.String())
 		}
 
-		if rawMsg.RoundNubmer != currentRound {
-			return nil, fmt.Errorf("message for incorrect round %d, expected %d", rawMsg.RoundNubmer, currentRound)
+		if rawMsg.RoundNumber != currentRound {
+			return nil, fmt.Errorf("message for incorrect round %d, expected %d", rawMsg.RoundNumber, currentRound)
 		}
 
 		// TODO: consider recovering and checking user signatures rather than aggregator ones
@@ -79,7 +79,7 @@ func (s *ServerMessager) UnblindPartialMessages(msgs []*Signed[ServerPartialDecr
 	originalAggregate := msgs[0].UnsafeObject().OriginalAggregate
 
 	unblindedMessage := ServerRoundData{
-		RoundNubmer:   originalAggregate.RoundNubmer,
+		RoundNumber:   originalAggregate.RoundNumber,
 		AuctionVector: originalAggregate.AuctionVector.Clone().DecryptInplace(blindingVector.AuctionPad, blindingVector.CountersPad),
 		MessageVector: crypto.Xor(originalAggregate.MessageVector, blindingVector.MessagePad),
 	}
@@ -93,7 +93,7 @@ type AggregatorMessager struct {
 
 func (a *AggregatorMessager) AggregateClientMessages(round int, msgs []*Signed[ClientRoundMessage], authorizedClients map[string]bool) (*AggregatedClientMessages, error) {
 	aggregatedMsg := AggregatedClientMessages{
-		RoundNubmer:   round,
+		RoundNumber:   round,
 		AuctionVector: blind_auction.NewIBFVector(a.Config.AuctionSlots),
 		MessageVector: make([]byte, a.Config.MessageSize),
 	}
@@ -109,8 +109,8 @@ func (a *AggregatorMessager) AggregateClientMessages(round int, msgs []*Signed[C
 			return nil, fmt.Errorf("unauthorized client %s", signer.String())
 		}
 
-		if rawMsg.RoundNubmer != round {
-			return nil, fmt.Errorf("client message for round %d, expected %d", rawMsg.RoundNubmer, round)
+		if rawMsg.RoundNumber != round {
+			return nil, fmt.Errorf("client message for round %d, expected %d", rawMsg.RoundNumber, round)
 		}
 
 		// TODO: aggregate user signatures (BLS or equivalent)
@@ -124,7 +124,7 @@ func (a *AggregatorMessager) AggregateClientMessages(round int, msgs []*Signed[C
 
 func (a *AggregatorMessager) AggregateAggregates(round int, msgs []*Signed[AggregatedClientMessages], authorizedAggregators map[string]bool) (*AggregatedClientMessages, error) {
 	aggregatedMsg := AggregatedClientMessages{
-		RoundNubmer: round,
+		RoundNumber: round,
 	}
 
 	for _, msg := range msgs {
@@ -136,8 +136,8 @@ func (a *AggregatorMessager) AggregateAggregates(round int, msgs []*Signed[Aggre
 			return nil, fmt.Errorf("unauthorized aggregator %s", signer.String())
 		}
 
-		if rawMsg.RoundNubmer != round {
-			return nil, fmt.Errorf("client message for round %d, expected %d", rawMsg.RoundNubmer, round)
+		if rawMsg.RoundNumber != round {
+			return nil, fmt.Errorf("client message for round %d, expected %d", rawMsg.RoundNumber, round)
 		}
 
 		if aggregatedMsg.AuctionVector == nil {
@@ -164,7 +164,7 @@ func (c *ClientMessager) PrepareMessage(currentRound int, previousRoundOutput *S
 
 	// Note that messages must be salted (random prefix).
 	shouldSendMessage, messageIndex := func() (bool, uint32) {
-		if previousRoundOutput == nil || previousRoundOutput.UnsafeObject().RoundNubmer+1 != currentRound {
+		if previousRoundOutput == nil || previousRoundOutput.UnsafeObject().RoundNumber+1 != currentRound {
 			return false, 0
 		}
 
@@ -212,7 +212,7 @@ func (c *ClientMessager) PrepareMessage(currentRound int, previousRoundOutput *S
 	}
 
 	return &ClientRoundMessage{
-		RoundNubmer:   currentRound,
+		RoundNumber:   currentRound,
 		AuctionVector: auctionIBF,
 		MessageVector: MessageVector(messageVector),
 	}, shouldSendMessage, nil
