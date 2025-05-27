@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	blind_auction "github.com/flashbots/adcnet/blind-auction"
 	"github.com/flashbots/adcnet/crypto"
 )
 
@@ -21,7 +22,7 @@ type Client interface {
 	PrepareMessage(ctx context.Context, round int,
 		previousRoundOutput *Signed[ServerRoundData],
 		message []byte,
-		auctionData *AuctionData) (*ClientRoundMessage, bool, error)
+		auctionData *blind_auction.AuctionData) (*ClientRoundMessage, bool, error)
 
 	// ProcessRoundData processes the broadcast from the server to extract
 	// messages and auction results.
@@ -146,33 +147,17 @@ type ADCNetConfig struct {
 	// RoundDuration is the time duration of each protocol round.
 	RoundDuration time.Duration
 
-	// MessageSlots is the number of message slots in the broadcast.
-	MessageSlots uint32
+	// AuctionSlots is the number of message slots in the broadcast.
+	AuctionSlots uint32
 
-	// MessageSize is the size of each message slot in bytes.
+	// MessageSize is the size of message vector in bytes.
 	MessageSize uint32
 
-	// MinClients is the minimum number of clients required for a round.
+	// MinClients is the minimum number of clients required for a round, in
+	// order to prevent deannonymization.
 	MinClients uint32
 
-	// AnytrustServers is the list of anytrust server addresses.
-	AnytrustServers []string
-
-	// Aggregators is the list of aggregator addresses.
-	Aggregators []string
-
-	// RoundsPerWindow defines how many rounds are in a participation window.
+	// RoundsPerWindow defines how many rounds are in a participation window
+	// for SPAM prevention.
 	RoundsPerWindow uint32
-
-	// IBFNChunks is the number of chunks (levels) in the IBF.
-	IBFNChunks int
-
-	// IBFNBuckets is the number of buckets in the first level of the IBF.
-	IBFNBuckets int
-
-	// IBFShrinkFactor is the factor by which bucket count decreases per level.
-	IBFShrinkFactor float64
-
-	// IBFChunkSize is the size of each chunk in the IBF in bytes.
-	IBFChunkSize int
 }

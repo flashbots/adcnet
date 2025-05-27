@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 
+	blind_auction "github.com/flashbots/adcnet/blind-auction"
 	"github.com/flashbots/adcnet/crypto"
 )
 
@@ -66,14 +67,14 @@ type MessageVector []byte
 // ClientRoundMessage contains a client's encrypted message and auction bid for a round.
 type ClientRoundMessage struct {
 	RoundNubmer   int
-	IBFVector     *IBFVector
+	AuctionVector *blind_auction.IBFVector
 	MessageVector MessageVector
 }
 
 // AggregatedClientMessages contains aggregated messages from multiple clients.
 type AggregatedClientMessages struct {
 	RoundNubmer   int
-	IBFVector     *IBFVector
+	AuctionVector *blind_auction.IBFVector
 	MessageVector MessageVector
 	UserPKs       []crypto.PublicKey
 }
@@ -82,13 +83,13 @@ type AggregatedClientMessages struct {
 type ServerPartialDecryptionMessage struct {
 	OriginalAggregate AggregatedClientMessages
 	UserPKs           []crypto.PublicKey
-	BlindingVector    *BlindingVector
+	BlindingVector    *blind_auction.BlindingVector
 }
 
 // ServerRoundData contains the final decrypted round output.
 type ServerRoundData struct {
 	RoundNubmer   int
-	IBFVector     *IBFVector
+	AuctionVector *blind_auction.IBFVector
 	MessageVector MessageVector
 }
 

@@ -1,4 +1,4 @@
-package protocol
+package blind_auction
 
 import (
 	"crypto/sha256"
@@ -115,7 +115,7 @@ func (v *IBFVector) InsertChunk(msg [IBFChunkSize]byte) {
 }
 
 // EncryptInplace encrypts the IBF in place using provided pads.
-func (v *IBFVector) EncryptInplace(ibfVectorPad AuctionPad, counterBlinders CountersPad) {
+func (v *IBFVector) EncryptInplace(ibfVectorPad []byte, counterBlinders []uint64) {
 	index := uint32(0)
 	for level := range v.Chunks {
 		for chunk := range v.Chunks[level] {

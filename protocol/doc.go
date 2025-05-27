@@ -1,5 +1,5 @@
 // Package protocol implements ADCNet: an auction-based anonymous broadcast channel,
-// loosely based on the paper "ZIPNet: Low-bandwidth anonymous broadcast from 
+// loosely based on the paper "ZIPNet: Low-bandwidth anonymous broadcast from
 // (dis)Trusted Execution Environments" with extensions for auction-based
 // message scheduling and dynamic message sizing.
 //

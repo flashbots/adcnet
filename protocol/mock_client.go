@@ -3,6 +3,7 @@ package protocol
 import (
 	"context"
 
+	blind_auction "github.com/flashbots/adcnet/blind-auction"
 	"github.com/flashbots/adcnet/crypto"
 )
 
@@ -14,7 +15,7 @@ type MockClient struct {
 	prepareMessageFunc func(ctx context.Context, round int,
 		previousRoundOutput *Signed[ServerRoundData],
 		message []byte,
-		auctionData *AuctionData) (*ClientRoundMessage, bool, error)
+		auctionData *blind_auction.AuctionData) (*ClientRoundMessage, bool, error)
 	processRoundDataFunc func(ctx context.Context, round int,
 		roundData *Signed[ServerRoundData]) ([]byte, error)
 }
@@ -26,17 +27,17 @@ func NewMockClient(publicKey crypto.PublicKey, nSlots uint32) *MockClient {
 		prepareMessageFunc: func(ctx context.Context, round int,
 			previousRoundOutput *Signed[ServerRoundData],
 			message []byte,
-			auctionData *AuctionData) (*ClientRoundMessage, bool, error) {
+			auctionData *blind_auction.AuctionData) (*ClientRoundMessage, bool, error) {
 
 			// Create a default mock message
-			ibfVector := NewIBFVector(nSlots)
+			ibfVector := blind_auction.NewIBFVector(nSlots)
 			if auctionData != nil {
 				ibfVector.InsertChunk(auctionData.EncodeToChunk())
 			}
 
 			return &ClientRoundMessage{
 				RoundNubmer:   round,
-				IBFVector:     ibfVector,
+				AuctionVector: ibfVector,
 				MessageVector: make([]byte, 16000), // Default size
 			}, true, nil
 		},
@@ -56,7 +57,7 @@ func (m *MockClient) GetPublicKey() crypto.PublicKey {
 func (m *MockClient) PrepareMessage(ctx context.Context, round int,
 	previousRoundOutput *Signed[ServerRoundData],
 	message []byte,
-	auctionData *AuctionData) (*ClientRoundMessage, bool, error) {
+	auctionData *blind_auction.AuctionData) (*ClientRoundMessage, bool, error) {
 
 	return m.prepareMessageFunc(ctx, round, previousRoundOutput, message, auctionData)
 }
@@ -82,7 +83,7 @@ func (m *MockClient) RegisterServerPublicKey(serverID string, publicKey crypto.P
 func (m *MockClient) SetPrepareMessageFunc(fn func(ctx context.Context, round int,
 	previousRoundOutput *Signed[ServerRoundData],
 	message []byte,
-	auctionData *AuctionData) (*ClientRoundMessage, bool, error)) {
+	auctionData *blind_auction.AuctionData) (*ClientRoundMessage, bool, error)) {
 
 	m.prepareMessageFunc = fn
 }

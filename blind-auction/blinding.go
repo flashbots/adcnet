@@ -1,4 +1,4 @@
-package protocol
+package blind_auction
 
 import (
 	"crypto/hkdf"
@@ -8,6 +8,7 @@ import (
 	"github.com/flashbots/adcnet/crypto"
 )
 
+type MessagePad []byte
 type AuctionPad []byte
 type CountersPad []uint64
 
@@ -15,7 +16,7 @@ type CountersPad []uint64
 // Assumes secure shared key establishment and unique round/key combinations.
 // Provides confidentiality only, no authentication.
 type BlindingVector struct {
-	MessagePad  MessageVector
+	MessagePad  MessagePad
 	AuctionPad  AuctionPad
 	CountersPad CountersPad
 }

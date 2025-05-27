@@ -1,4 +1,4 @@
-package protocol
+package blind_auction
 
 import (
 	"bytes"

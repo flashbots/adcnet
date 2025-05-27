@@ -1,9 +1,10 @@
-package protocol
+package blind_auction
 
 import (
+	"testing"
+
 	"github.com/flashbots/adcnet/crypto"
 	"github.com/stretchr/testify/assert"
-	"testing"
 )
 
 func TestAuctionEngine_BasicKnapsack(t *testing.T) {

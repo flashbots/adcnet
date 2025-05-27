@@ -3,6 +3,7 @@ package protocol
 import (
 	"testing"
 
+	blind_auction "github.com/flashbots/adcnet/blind-auction"
 	"github.com/flashbots/adcnet/crypto"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -30,7 +31,7 @@ func TestADCNetRoutinesE2E(t *testing.T) {
 
 	// Create test config
 	config := &ADCNetConfig{
-		MessageSlots: 10,
+		AuctionSlots: 10,
 		MessageSize:  60, // Small enough that only one message fits
 	}
 
@@ -70,7 +71,7 @@ func TestADCNetRoutinesE2E(t *testing.T) {
 
 	// Client 1 prepares message with high weight (10)
 	client1Message := []byte("Message from client 1")
-	client1AuctionData := AuctionDataFromMessage(client1Message, 10)
+	client1AuctionData := blind_auction.AuctionDataFromMessage(client1Message, 10)
 	client1RoundMsg, _, err := client1Messager.PrepareMessage(
 		1,   // round 1
 		nil, // no previous round output
@@ -81,7 +82,7 @@ func TestADCNetRoutinesE2E(t *testing.T) {
 
 	// Client 2 prepares message with lower weight (5)
 	client2Message := []byte("Message from client 2")
-	client2AuctionData := AuctionDataFromMessage(client2Message, 5)
+	client2AuctionData := blind_auction.AuctionDataFromMessage(client2Message, 5)
 	client2RoundMsg, _, err := client2Messager.PrepareMessage(
 		1,   // round 1
 		nil, // no previous round output
@@ -133,7 +134,7 @@ func TestADCNetRoutinesE2E(t *testing.T) {
 	// Test expectations for round 1
 	// In a real implementation, we would verify that both client messages
 	// are in the IBF and can be recovered, but here we just check it has content
-	recoveredEntries := round1Output.IBFVector.Recover()
+	recoveredEntries := round1Output.AuctionVector.Recover()
 	assert.NotEmpty(t, recoveredEntries, "Should recover auction entries from IBF")
 
 	// =========================================================================
@@ -142,7 +143,7 @@ func TestADCNetRoutinesE2E(t *testing.T) {
 
 	// Client 1 prepares message for round 2
 	client1MessageRound2 := []byte("Message from client 1 - round 2")
-	client1AuctionDataRound2 := AuctionDataFromMessage(client1MessageRound2, 10)
+	client1AuctionDataRound2 := blind_auction.AuctionDataFromMessage(client1MessageRound2, 10)
 	client1RoundMsg2, shouldSend1, err := client1Messager.PrepareMessage(
 		2, // round 2
 		signedRound1Output,
@@ -156,7 +157,7 @@ func TestADCNetRoutinesE2E(t *testing.T) {
 
 	// Client 2 prepares message for round 2
 	client2MessageRound2 := []byte("Message from client 2 - round 2")
-	client2AuctionDataRound2 := AuctionDataFromMessage(client2MessageRound2, 5)
+	client2AuctionDataRound2 := blind_auction.AuctionDataFromMessage(client2MessageRound2, 5)
 	client2RoundMsg2, shouldSend2, err := client2Messager.PrepareMessage(
 		2, // round 2
 		signedRound1Output,
@@ -187,7 +188,7 @@ func TestADCNetRoutinesE2E(t *testing.T) {
 		2,
 		[]*Signed[AggregatedClientMessages]{signedAggMsg2},
 		map[string]bool{serverPK.String(): true},
-		round1Output.IBFVector,
+		round1Output.AuctionVector,
 	)
 	require.NoError(t, err)
 
@@ -203,7 +204,7 @@ func TestADCNetRoutinesE2E(t *testing.T) {
 	require.NoError(t, err)
 
 	// Test expectations for round 2
-	recoveredEntries2 := round2Output.IBFVector.Recover()
+	recoveredEntries2 := round2Output.AuctionVector.Recover()
 	assert.Equal(t, 2, len(recoveredEntries2), "Should recover auction entries from round 2 IBF")
 
 	assert.Contains(t, recoveredEntries2, client1AuctionDataRound2.EncodeToChunk())
