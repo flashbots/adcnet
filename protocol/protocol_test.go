@@ -21,7 +21,6 @@ func TestADCNetRoutinesE2E(t *testing.T) {
 	// Create client and server keys
 	client1PK, client1SK, _ := crypto.GenerateKeyPair()
 	client2PK, client2SK, _ := crypto.GenerateKeyPair()
-	serverPK, serverSK, _ := crypto.GenerateKeyPair()
 
 	// Create shared secrets between clients and server
 	sharedSecrets := map[string]crypto.SharedKey{
@@ -59,10 +58,6 @@ func TestADCNetRoutinesE2E(t *testing.T) {
 	authorizedClients := map[string]bool{
 		client1PK.String(): true,
 		client2PK.String(): true,
-	}
-
-	authorizedServers := map[string]bool{
-		serverPK.String(): true,
 	}
 
 	// =========================================================================
@@ -103,32 +98,18 @@ func TestADCNetRoutinesE2E(t *testing.T) {
 	aggregatedMsg, err := (&AggregatorMessager{Config: config}).AggregateClientMessages(1, clientMsgs, authorizedClients)
 	require.NoError(t, err)
 
-	// Sign aggregated message
-	signedAggMsg, err := NewSigned(serverSK, aggregatedMsg)
-	require.NoError(t, err)
-
 	// Server processes aggregated message
-	partialDecryption, err := serverMessager.UnblindAggregates(
+	partialDecryption, err := serverMessager.UnblindAggregate(
 		1,
-		[]*Signed[AggregatedClientMessages]{signedAggMsg},
-		map[string]bool{serverPK.String(): true},
+		aggregatedMsg,
 		nil,
 	)
 	require.NoError(t, err, serverMessager.SharedSecrets)
 
-	// Sign partial decryption
-	signedPartialDecryption, err := NewSigned(serverSK, partialDecryption)
-	require.NoError(t, err)
-
 	// Combine partial decryptions (normally done by leader server)
 	round1Output, err := serverMessager.UnblindPartialMessages(
-		[]*Signed[ServerPartialDecryptionMessage]{signedPartialDecryption},
-		authorizedServers,
+		[]*ServerPartialDecryptionMessage{partialDecryption},
 	)
-	require.NoError(t, err)
-
-	// Sign round output
-	signedRound1Output, err := NewSigned(serverSK, round1Output)
 	require.NoError(t, err)
 
 	// Test expectations for round 1
@@ -146,7 +127,7 @@ func TestADCNetRoutinesE2E(t *testing.T) {
 	client1AuctionDataRound2 := blind_auction.AuctionDataFromMessage(client1MessageRound2, 10)
 	client1RoundMsg2, shouldSend1, err := client1Messager.PrepareMessage(
 		2, // round 2
-		signedRound1Output,
+		round1Output,
 		client1Message,
 		client1AuctionDataRound2,
 	)
@@ -160,7 +141,7 @@ func TestADCNetRoutinesE2E(t *testing.T) {
 	client2AuctionDataRound2 := blind_auction.AuctionDataFromMessage(client2MessageRound2, 5)
 	client2RoundMsg2, shouldSend2, err := client2Messager.PrepareMessage(
 		2, // round 2
-		signedRound1Output,
+		round1Output,
 		client2Message,
 		client2AuctionDataRound2,
 	)
@@ -179,27 +160,17 @@ func TestADCNetRoutinesE2E(t *testing.T) {
 	aggregatedMsg2, err := (&AggregatorMessager{Config: config}).AggregateClientMessages(2, []*Signed[ClientRoundMessage]{signedClient1Msg2, signedClient2Msg2}, authorizedClients)
 	require.NoError(t, err)
 
-	// Sign aggregated message
-	signedAggMsg2, err := NewSigned(serverSK, aggregatedMsg2)
-	require.NoError(t, err)
-
 	// Server processes aggregated message
-	partialDecryption2, err := serverMessager.UnblindAggregates(
+	partialDecryption2, err := serverMessager.UnblindAggregate(
 		2,
-		[]*Signed[AggregatedClientMessages]{signedAggMsg2},
-		map[string]bool{serverPK.String(): true},
+		aggregatedMsg2,
 		round1Output.AuctionVector,
 	)
 	require.NoError(t, err)
 
-	// Sign partial decryption
-	signedPartialDecryption2, err := NewSigned(serverSK, partialDecryption2)
-	require.NoError(t, err)
-
 	// Combine partial decryptions
 	round2Output, err := serverMessager.UnblindPartialMessages(
-		[]*Signed[ServerPartialDecryptionMessage]{signedPartialDecryption2},
-		authorizedServers,
+		[]*ServerPartialDecryptionMessage{partialDecryption2},
 	)
 	require.NoError(t, err)
 

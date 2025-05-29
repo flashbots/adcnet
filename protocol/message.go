@@ -79,9 +79,18 @@ type AggregatedClientMessages struct {
 	UserPKs       []crypto.PublicKey
 }
 
+func (m *AggregatedClientMessages) Union(o *AggregatedClientMessages) *AggregatedClientMessages {
+	return &AggregatedClientMessages{
+		RoundNumber:   m.RoundNumber,
+		AuctionVector: m.AuctionVector.Clone().UnionInplace(o.AuctionVector),
+		MessageVector: crypto.Xor(m.MessageVector, o.MessageVector),
+		UserPKs:       append(m.UserPKs, o.UserPKs...),
+	}
+}
+
 // ServerPartialDecryptionMessage contains a server's partial decryption share.
 type ServerPartialDecryptionMessage struct {
-	OriginalAggregate AggregatedClientMessages
+	OriginalAggregate *AggregatedClientMessages
 	UserPKs           []crypto.PublicKey
 	BlindingVector    *blind_auction.BlindingVector
 }

@@ -14,36 +14,19 @@ type ServerMessager struct {
 }
 
 // UnblindAggregates creates partial decryption of aggregated messages.
+// Assumes all aggregates have been verified!
 // Assumes all client shared secrets are established and fresh.
 // No verification of message integrity before processing.
-func (s *ServerMessager) UnblindAggregates(currentRound int, msgs []*Signed[AggregatedClientMessages], allowedAggregators map[string]bool, previousRoundAuction *blind_auction.IBFVector) (*ServerPartialDecryptionMessage, error) {
-	unifiedAggregate := AggregatedClientMessages{
-		RoundNumber:   currentRound,
-		AuctionVector: blind_auction.NewIBFVector(s.Config.AuctionSlots),
-		MessageVector: make([]byte, s.Config.MessageSize),
-	}
-	for _, msg := range msgs {
-		rawMsg, signer, err := msg.Recover()
-		if err != nil {
-			return nil, fmt.Errorf("invalid signature: %w", err)
-		}
-		if !allowedAggregators[signer.String()] {
-			return nil, fmt.Errorf("unauthorized aggregator %s", signer.String())
-		}
+func (s *ServerMessager) UnblindAggregate(currentRound int, aggregate *AggregatedClientMessages, previousRoundAuction *blind_auction.IBFVector) (*ServerPartialDecryptionMessage, error) {
+	// TODO: consider recovering and checking user signatures rather than aggregator ones
+	// TODO: aggregate user signatures (BLS or equivalent)
 
-		if rawMsg.RoundNumber != currentRound {
-			return nil, fmt.Errorf("message for incorrect round %d, expected %d", rawMsg.RoundNumber, currentRound)
-		}
-
-		// TODO: consider recovering and checking user signatures rather than aggregator ones
-		// TODO: aggregate user signatures (BLS or equivalent)
-		unifiedAggregate.UserPKs = append(unifiedAggregate.UserPKs, rawMsg.UserPKs...)
-		unifiedAggregate.AuctionVector.UnionInplace(rawMsg.AuctionVector)
-		crypto.XorInplace(unifiedAggregate.MessageVector, rawMsg.MessageVector)
+	if aggregate.RoundNumber != currentRound {
+		return nil, fmt.Errorf("message for incorrect round %d, expected %d", aggregate.RoundNumber, currentRound)
 	}
 
 	blindingVector := blind_auction.NewBlindingVector(s.Config.MessageSize, s.Config.AuctionSlots)
-	for _, userPk := range unifiedAggregate.UserPKs {
+	for _, userPk := range aggregate.UserPKs {
 		sharedKey, ok := s.SharedSecrets[userPk.String()]
 		if !ok {
 			return nil, fmt.Errorf("no shared key with user %x", userPk.Bytes())
@@ -56,27 +39,20 @@ func (s *ServerMessager) UnblindAggregates(currentRound int, msgs []*Signed[Aggr
 	}
 
 	return &ServerPartialDecryptionMessage{
-		OriginalAggregate: unifiedAggregate,
-		UserPKs:           unifiedAggregate.UserPKs,
+		OriginalAggregate: aggregate,
+		UserPKs:           aggregate.UserPKs,
 		BlindingVector:    blindingVector,
 	}, nil
 }
 
-func (s *ServerMessager) UnblindPartialMessages(msgs []*Signed[ServerPartialDecryptionMessage], allowedServers map[string]bool) (*ServerRoundData, error) {
+func (s *ServerMessager) UnblindPartialMessages(msgs []*ServerPartialDecryptionMessage) (*ServerRoundData, error) {
 	blindingVector := blind_auction.NewBlindingVector(s.Config.MessageSize, s.Config.AuctionSlots)
 
 	for _, msg := range msgs {
-		rawMsg, signer, err := msg.Recover()
-		if err != nil {
-			return nil, fmt.Errorf("invalid signature: %w", err)
-		}
-		if !allowedServers[signer.String()] {
-			return nil, fmt.Errorf("unauthorized server %s", signer.String())
-		}
-		blindingVector.UnionInplace(rawMsg.BlindingVector)
+		blindingVector.UnionInplace(msg.BlindingVector)
 	}
 
-	originalAggregate := msgs[0].UnsafeObject().OriginalAggregate
+	originalAggregate := msgs[0].OriginalAggregate
 
 	unblindedMessage := ServerRoundData{
 		RoundNumber:   originalAggregate.RoundNumber,
@@ -122,33 +98,25 @@ func (a *AggregatorMessager) AggregateClientMessages(round int, msgs []*Signed[C
 	return &aggregatedMsg, nil
 }
 
-func (a *AggregatorMessager) AggregateAggregates(round int, msgs []*Signed[AggregatedClientMessages], authorizedAggregators map[string]bool) (*AggregatedClientMessages, error) {
+func (a *AggregatorMessager) AggregateAggregates(round int, msgs []*AggregatedClientMessages) (*AggregatedClientMessages, error) {
 	aggregatedMsg := AggregatedClientMessages{
 		RoundNumber: round,
 	}
 
 	for _, msg := range msgs {
-		rawMsg, signer, err := msg.Recover()
-		if err != nil {
-			return nil, fmt.Errorf("invalid signature: %w", err)
-		}
-		if !authorizedAggregators[signer.String()] {
-			return nil, fmt.Errorf("unauthorized aggregator %s", signer.String())
-		}
-
-		if rawMsg.RoundNumber != round {
-			return nil, fmt.Errorf("client message for round %d, expected %d", rawMsg.RoundNumber, round)
+		if msg.RoundNumber != round {
+			return nil, fmt.Errorf("client message for round %d, expected %d", msg.RoundNumber, round)
 		}
 
 		if aggregatedMsg.AuctionVector == nil {
-			aggregatedMsg.AuctionVector = blind_auction.NewIBFVector(uint32(len(rawMsg.AuctionVector.Chunks[0])))
+			aggregatedMsg.AuctionVector = blind_auction.NewIBFVector(uint32(len(msg.AuctionVector.Chunks[0])))
 		}
 
 		// Alternatively recover user messages
 		// TODO: aggregate user signatures (BLS or equivalent)
-		aggregatedMsg.UserPKs = append(aggregatedMsg.UserPKs, rawMsg.UserPKs...)
-		aggregatedMsg.AuctionVector.UnionInplace(rawMsg.AuctionVector)
-		crypto.XorInplace(aggregatedMsg.MessageVector, rawMsg.MessageVector)
+		aggregatedMsg.UserPKs = append(aggregatedMsg.UserPKs, msg.UserPKs...)
+		aggregatedMsg.AuctionVector.UnionInplace(msg.AuctionVector)
+		crypto.XorInplace(aggregatedMsg.MessageVector, msg.MessageVector)
 	}
 
 	return &aggregatedMsg, nil
@@ -160,15 +128,15 @@ type ClientMessager struct {
 }
 
 // PrepareMessage creates encrypted message with auction data.
-func (c *ClientMessager) PrepareMessage(currentRound int, previousRoundOutput *Signed[ServerRoundData], previousRoundMessage []byte, currentRoundAuctionData *blind_auction.AuctionData) (*ClientRoundMessage, bool, error) {
+func (c *ClientMessager) PrepareMessage(currentRound int, previousRoundOutput *ServerRoundData, previousRoundMessage []byte, currentRoundAuctionData *blind_auction.AuctionData) (*ClientRoundMessage, bool, error) {
 
 	// Note that messages must be salted (random prefix).
 	shouldSendMessage, messageIndex := func() (bool, uint32) {
-		if previousRoundOutput == nil || previousRoundOutput.UnsafeObject().RoundNumber+1 != currentRound {
+		if previousRoundOutput == nil || previousRoundOutput.RoundNumber+1 != currentRound {
 			return false, 0
 		}
 
-		chunks := previousRoundOutput.UnsafeObject().AuctionVector.Recover()
+		chunks := previousRoundOutput.AuctionVector.Recover()
 		bids := make([]blind_auction.AuctionData, 0, len(chunks))
 		for _, chunk := range chunks {
 			bids = append(bids, *blind_auction.AuctionDataFromChunk(chunk))
@@ -193,7 +161,7 @@ func (c *ClientMessager) PrepareMessage(currentRound int, previousRoundOutput *S
 	var previousRoundAuction *blind_auction.IBFVector = nil
 	if previousRoundOutput != nil {
 		// TODO: we might want to verify
-		previousRoundAuction = previousRoundOutput.UnsafeObject().AuctionVector
+		previousRoundAuction = previousRoundOutput.AuctionVector
 	}
 	for _, serverKem := range c.SharedSecrets {
 		err := blindingVector.DeriveInplace(currentRound, serverKem, previousRoundAuction)
