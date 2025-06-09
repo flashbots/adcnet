@@ -45,37 +45,50 @@ func GenerateSharedSecrets(n, t int) []*big.Int {
 	return k_ts
 }
 
-// Not very optimal
+// Not very optimal, but does not do excessive allocations
 func NevilleInterpolation(xs []*big.Int, ys []*big.Int, x *big.Int) *big.Int {
-	ps := make([]*big.Rat, len(xs))
+	ps := make([]big.Rat, len(xs))
+
+	// tmps
+	ik := new(big.Rat)
+	dm := new(big.Int)
+	bigOne := big.NewInt(1)
+
 	for k := range ys {
 		for i := 0; i < len(ys)-k; i++ {
 			if k == 0 {
-				ps[i] = big.NewRat(0, 1).SetInt(ys[i])
+				ps[i].SetFrac(ys[i], bigOne)
 			} else {
-				ik := big.NewRat(0, 1).Mul(big.NewRat(0, 1).SetInt(big.NewInt(0).Sub(big.NewInt(0).Set(x), xs[i+k])), ps[i])
-				ixi := big.NewRat(0, 1).Mul(big.NewRat(0, 1).SetInt(big.NewInt(0).Sub(big.NewInt(0).Set(xs[i]), x)), ps[i+1])
-				dm := big.NewRat(0, 1).SetInt(big.NewInt(0).Sub(big.NewInt(0).Set(xs[i]), xs[i+k]))
-				ps[i] = big.NewRat(0, 1).Mul(ik.Add(ik, ixi), dm.Inv(dm))
+				ik.SetFrac(x, bigOne)
+				ik.Num().Sub(ik.Num(), xs[i+k])
+				ik.Mul(ik, &ps[i])
+
+				// ps[i] is no longer needed, reuse the memory
+				ps[i].SetFrac(xs[i], bigOne)
+				ps[i].Num().Sub(ps[i].Num(), x)
+				ps[i].Mul(&ps[i], &ps[i+1])
+
+				ps[i].Add(&ps[i], ik)
+
+				ps[i].Denom().Mul(ps[i].Denom(), dm.Sub(xs[i], xs[i+k]))
 			}
 		}
 	}
 	
-	return big.NewInt(0).Div(ps[0].Num(), ps[0].Denom())
+	return bigOne.Div(ps[0].Num(), ps[0].Denom())
 }
 
 func EvaluateF(sizeT int, K_Ts []*big.Int, round *big.Int) *big.Int {
+	xs := make([]*big.Int, sizeT+1)
+	ys := make([]*big.Int, sizeT+1)
+	for i := range xs {
+		xs[i] = big.NewInt(int64(i))
+		ys[i] = big.NewInt(0)
+	}
+
 	sum := big.NewInt(0)
 	for t := range K_Ts {
-		xs := make([]*big.Int, sizeT+1)
-		ys := make([]*big.Int, sizeT+1)
-		for i := range xs {
-			// Should work? Does everyone agree on xs?
-			xs[i] = big.NewInt(int64(i))
-			ys[i] = big.NewInt(0)
-		}
 		ys[0].Set(K_Ts[t])
-
 		sum = sum.Add(sum, NevilleInterpolation(xs, ys, round))
 	}
 

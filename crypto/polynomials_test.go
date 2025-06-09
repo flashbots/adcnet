@@ -131,7 +131,7 @@ func TestThresholdSecretSharing(t *testing.T) {
 	F1.Add(F1, EvaluateF(2, []*big.Int{servers[2].Shares["34"]}, round))
 
 	F1.Add(F1, EvaluateF(2, []*big.Int{servers[3].Shares["24"]}, round))
-	// Ignored by S2
+	// Ignored by S4
 	// F1.Add(F1, EvaluateF(2, []*big.Int{servers[3].Shares["04"]}, round))
 	// F1.Add(F1, EvaluateF(2, []*big.Int{servers[3].Shares["14"]}, round))
 
