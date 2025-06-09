@@ -99,35 +99,47 @@ func TestThresholdSecretSharing(t *testing.T) {
 
 	// Now the tricky bit: compose the shared secret from evaluations of specific servers
 	// F(x) = sum (T from J) F_T(x)
+	// Note that we can't just add all shares in blindly, we need to know which ones to exclude
+	// Each server sends shares the recipient is missing, one by one (not the sum)
 
-	// (0, 1, 2)
+	// (0, 1, 2), with server 2 as the recipient
 	F0 := big.NewInt(0)
 	F0.Add(F0, EvaluateF(2, []*big.Int{servers[0].Shares["12"]}, round))
-	F0.Add(F0, EvaluateF(2, []*big.Int{servers[0].Shares["13"]}, round))
-	F0.Add(F0, EvaluateF(2, []*big.Int{servers[0].Shares["14"]}, round))
 	F0.Add(F0, EvaluateF(2, []*big.Int{servers[0].Shares["23"]}, round))
 	F0.Add(F0, EvaluateF(2, []*big.Int{servers[0].Shares["24"]}, round))
-	F0.Add(F0, EvaluateF(2, []*big.Int{servers[0].Shares["34"]}, round))
+	// S0 does not add more shares, since S2 has them
 
 	F0.Add(F0, EvaluateF(2, []*big.Int{servers[1].Shares["02"]}, round))
-	F0.Add(F0, EvaluateF(2, []*big.Int{servers[1].Shares["03"]}, round))
-	F0.Add(F0, EvaluateF(2, []*big.Int{servers[1].Shares["04"]}, round))
+	// S1 sends the following, but they are not added in as they are already added by S0
+	// F0.Add(F0, EvaluateF(2, []*big.Int{servers[1].Shares["23"]}, round))
+	// F0.Add(F0, EvaluateF(2, []*big.Int{servers[1].Shares["24"]}, round))
+	// S1 does not add more shares, since S2 has them
 
+	// S2 received the sum of its missing shares from S0 and S1, and will add its own shares now
+	// S2 knows it got its missing shares from S0 and S1
 	F0.Add(F0, EvaluateF(2, []*big.Int{servers[2].Shares["01"]}, round))
+	F0.Add(F0, EvaluateF(2, []*big.Int{servers[2].Shares["03"]}, round))
+	F0.Add(F0, EvaluateF(2, []*big.Int{servers[2].Shares["04"]}, round))
+	F0.Add(F0, EvaluateF(2, []*big.Int{servers[2].Shares["13"]}, round))
+	F0.Add(F0, EvaluateF(2, []*big.Int{servers[2].Shares["14"]}, round))
+	F0.Add(F0, EvaluateF(2, []*big.Int{servers[2].Shares["34"]}, round))
 
-	// (2, 3, 4)
+	// (2, 3, 4), with S4 as recipient
 	F1 := big.NewInt(0)
-	F1.Add(F1, EvaluateF(2, []*big.Int{servers[2].Shares["01"]}, round))
-	F1.Add(F1, EvaluateF(2, []*big.Int{servers[2].Shares["03"]}, round))
 	F1.Add(F1, EvaluateF(2, []*big.Int{servers[2].Shares["04"]}, round))
-	F1.Add(F1, EvaluateF(2, []*big.Int{servers[2].Shares["13"]}, round))
 	F1.Add(F1, EvaluateF(2, []*big.Int{servers[2].Shares["14"]}, round))
 	F1.Add(F1, EvaluateF(2, []*big.Int{servers[2].Shares["34"]}, round))
 
-	F1.Add(F1, EvaluateF(2, []*big.Int{servers[3].Shares["02"]}, round))
-	F1.Add(F1, EvaluateF(2, []*big.Int{servers[3].Shares["12"]}, round))
 	F1.Add(F1, EvaluateF(2, []*big.Int{servers[3].Shares["24"]}, round))
+	// Ignored by S2
+	// F1.Add(F1, EvaluateF(2, []*big.Int{servers[3].Shares["04"]}, round))
+	// F1.Add(F1, EvaluateF(2, []*big.Int{servers[3].Shares["14"]}, round))
 
+	F1.Add(F1, EvaluateF(2, []*big.Int{servers[4].Shares["01"]}, round))
+	F1.Add(F1, EvaluateF(2, []*big.Int{servers[4].Shares["02"]}, round))
+	F1.Add(F1, EvaluateF(2, []*big.Int{servers[4].Shares["03"]}, round))
+	F1.Add(F1, EvaluateF(2, []*big.Int{servers[4].Shares["12"]}, round))
+	F1.Add(F1, EvaluateF(2, []*big.Int{servers[4].Shares["13"]}, round))
 	F1.Add(F1, EvaluateF(2, []*big.Int{servers[4].Shares["23"]}, round))
 
 	require.Zero(t, F0.Cmp(F1))
