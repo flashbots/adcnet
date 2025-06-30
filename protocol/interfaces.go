@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"context"
+	"math/big"
 	"time"
 
 	blind_auction "github.com/flashbots/adcnet/blind-auction"
@@ -152,6 +153,8 @@ type ADCNetConfig struct {
 
 	// MessageSize is the size of message vector in bytes.
 	MessageSize uint32
+
+	MessageFieldOrder *big.Int
 
 	// MinClients is the minimum number of clients required for a round, in
 	// order to prevent deannonymization.

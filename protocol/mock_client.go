@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"context"
+	"math/big"
 
 	blind_auction "github.com/flashbots/adcnet/blind-auction"
 	"github.com/flashbots/adcnet/crypto"
@@ -37,8 +38,8 @@ func NewMockClient(publicKey crypto.PublicKey, nSlots uint32) *MockClient {
 
 			return &ClientRoundMessage{
 				RoundNumber:   round,
-				AuctionVector: ibfVector,
-				MessageVector: make([]byte, 16000), // Default size
+				AuctionVector: ibfVector.EncodeAsFieldElements(),
+				MessageVector: []*big.Int{},
 			}, true, nil
 		},
 		processRoundDataFunc: func(ctx context.Context, round int,

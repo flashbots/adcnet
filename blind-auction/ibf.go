@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"math/big"
 
 	"github.com/flashbots/adcnet/crypto"
 )
@@ -114,50 +115,44 @@ func (v *IBFVector) InsertChunk(msg [IBFChunkSize]byte) {
 	}
 }
 
-// EncryptInplace encrypts the IBF in place using provided pads.
-func (v *IBFVector) EncryptInplace(ibfVectorPad []byte, counterBlinders []uint64) {
-	index := uint32(0)
+func (v *IBFVector) EncodeAsFieldElements() []*big.Int {
+	res := []*big.Int{}
 	for level := range v.Chunks {
 		for chunk := range v.Chunks[level] {
-			crypto.XorInplace(v.Chunks[level][chunk][:], ibfVectorPad[index:index+IBFChunkSize])
-			index += IBFChunkSize
+			res = append(res, new(big.Int).SetBytes(v.Chunks[level][chunk][:]))
 		}
 	}
 
 	// Blind counters using derived values from the pad
-	counterPadIndex := 0
 	for level := range v.Counters {
 		for i := range v.Counters[level] {
-			// Blind the counter
-			v.Counters[level][i] = BlindCounter(v.Counters[level][i], counterBlinders[counterPadIndex])
-
-			counterPadIndex++
+			res = append(res, new(big.Int).SetUint64(v.Counters[level][i]))
 		}
 	}
+	return res
 }
 
-// DecryptInplace decrypts the IBF in place using provided pads.
-func (v *IBFVector) DecryptInplace(ibfVectorPad []byte, counterBlinders CountersPad) *IBFVector {
+// DecodeFromElements decodes elements into an IBF vector
+func (v *IBFVector) DecodeFromElements(elements []*big.Int) *IBFVector {
 	index := uint32(0)
 	for level := range v.Chunks {
 		for chunk := range v.Chunks[level] {
-			crypto.XorInplace(v.Chunks[level][chunk][:], ibfVectorPad[index:index+IBFChunkSize])
-			index += IBFChunkSize
+			copy(v.Chunks[level][chunk][:], elements[index].Bytes())
+			index += 1
 		}
 	}
 
-	// Unblind counters
-	counterPadIndex := 0
 	for level := range v.Counters {
 		for i := range v.Counters[level] {
-			v.Counters[level][i] = uint64(UnblindCounter(v.Counters[level][i], counterBlinders[counterPadIndex]))
-			counterPadIndex += 1
+			v.Counters[level][i] = elements[index].Uint64()
+			index += 1
 		}
 	}
 
 	return v
 }
 
+/*
 // UnionInplace merges another IBF into this one by XORing chunks and adding counters.
 func (v *IBFVector) UnionInplace(other *IBFVector) *IBFVector {
 	for level := range v.Counters {
@@ -169,6 +164,7 @@ func (v *IBFVector) UnionInplace(other *IBFVector) *IBFVector {
 
 	return v
 }
+*/
 
 // Recover attempts to extract all elements from the IBF.
 // No guarantee of complete recovery or detection of missing elements.

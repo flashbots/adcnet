@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math/big"
 
 	blind_auction "github.com/flashbots/adcnet/blind-auction"
 	"github.com/flashbots/adcnet/crypto"
@@ -62,44 +63,68 @@ func (s *Signed[T]) Recover() (*T, crypto.PublicKey, error) {
 	return s.Object, s.PublicKey, nil
 }
 
-type MessageVector []byte
-
 // ClientRoundMessage contains a client's encrypted message and auction bid for a round.
 type ClientRoundMessage struct {
 	RoundNumber   int
-	AuctionVector *blind_auction.IBFVector
-	MessageVector MessageVector
+	ServerID      int32
+	AuctionVector []*big.Int
+	MessageVector []*big.Int
 }
 
 // AggregatedClientMessages contains aggregated messages from multiple clients.
 type AggregatedClientMessages struct {
 	RoundNumber   int
-	AuctionVector *blind_auction.IBFVector
-	MessageVector MessageVector
+	ServerID      int32
+	AuctionVector []*big.Int
+	MessageVector []*big.Int
 	UserPKs       []crypto.PublicKey
 }
 
-func (m *AggregatedClientMessages) Union(o *AggregatedClientMessages) *AggregatedClientMessages {
-	return &AggregatedClientMessages{
-		RoundNumber:   m.RoundNumber,
-		AuctionVector: m.AuctionVector.Clone().UnionInplace(o.AuctionVector),
-		MessageVector: crypto.Xor(m.MessageVector, o.MessageVector),
-		UserPKs:       append(m.UserPKs, o.UserPKs...),
+func (m *AggregatedClientMessages) UnionInplace(o *AggregatedClientMessages) *AggregatedClientMessages {
+	// Should probably assert they are equal
+	m.RoundNumber = o.RoundNumber
+	if m.AuctionVector == nil {
+		m.AuctionVector = make([]*big.Int, len(o.AuctionVector))
+		for i := range m.AuctionVector {
+			m.AuctionVector[i] = big.NewInt(0)
+		}
 	}
+	if m.MessageVector == nil {
+		m.MessageVector = make([]*big.Int, len(o.MessageVector))
+		for i := range m.MessageVector {
+			m.MessageVector[i] = big.NewInt(0)
+		}
+	}
+	if m.UserPKs == nil {
+		m.UserPKs = []crypto.PublicKey{}
+	}
+
+	for i := range o.AuctionVector {
+		m.AuctionVector[i] = crypto.FieldAdd(m.AuctionVector[i], o.AuctionVector[i], crypto.AuctionFieldOrder)
+	}
+	for i := range o.MessageVector {
+		m.MessageVector[i] = crypto.FieldAdd(m.MessageVector[i], o.MessageVector[i], crypto.MessageFieldOrder)
+	}
+
+	m.UserPKs = append(m.UserPKs, o.UserPKs...)
+
+	return m
 }
 
 // ServerPartialDecryptionMessage contains a server's partial decryption share.
 type ServerPartialDecryptionMessage struct {
+	ServerID          int32
 	OriginalAggregate *AggregatedClientMessages
 	UserPKs           []crypto.PublicKey
-	BlindingVector    *blind_auction.BlindingVector
+	AuctionVector     []*big.Int
+	MessageVector     []*big.Int
 }
 
 // ServerRoundData contains the final decrypted round output.
 type ServerRoundData struct {
 	RoundNumber   int
 	AuctionVector *blind_auction.IBFVector
-	MessageVector MessageVector
+	MessageVector []byte
 }
 
 // AggregatorRegistrationBlob contains the public key and metadata for an aggregator.

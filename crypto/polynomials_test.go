@@ -4,16 +4,13 @@ import (
 	"fmt"
 	"maps"
 	"math/big"
-	"math/rand"
+	"crypto/rand"
+	unsafe_rand "math/rand"
 	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
-
-type Client struct {
-	Secret *big.Int
-}
 
 type Server struct {
 	Shares map[string]*big.Int
@@ -56,7 +53,7 @@ func TestBigInterpolation(t *testing.T) {
 
 func TestThresholdSecretSharing(t *testing.T) {
 	// 5 participants, 3-of-5
-	rs := rand.New(rand.NewSource(0))
+	rs := unsafe_rand.New(unsafe_rand.NewSource(0))
 
 	servers := make([]Server, 5)
 
@@ -145,14 +142,102 @@ func TestThresholdSecretSharing(t *testing.T) {
 	require.Zero(t, F0.Cmp(F1))
 }
 
-
-/*
-func TestPolys(t *testing.T) {
-	N := 5
-	T := 2
-	K_Ts := GenerateSharedSecrets(N, T)
-
-	// All servers should be missing t shares
-
+type Client struct {
+	Shares map[string]*big.Int
 }
-*/
+
+func TestRandomPolynomial(t *testing.T) {
+	ys := RandomPolynomialEvals(1, []*big.Int{big.NewInt(1), big.NewInt(2)}, big.NewInt(10))
+	require.Zero(t, big.NewInt(10).Cmp(big.NewInt(0).Mod(NevilleInterpolation([]*big.Int{big.NewInt(1), big.NewInt(2)}, ys, big.NewInt(0)), fieldOrder)))
+}
+
+func TestServerStreams(t *testing.T) {
+	// Setup:= 3 clients, 2 messages, 2-of-3 servers
+	// Other than for blinding I'll simply ignore the third server
+	rs := unsafe_rand.New(unsafe_rand.NewSource(0))
+
+	clientsSharedSecrets := make([][]SharedKey, 3)
+	serversSharedSecrets := make([][]SharedKey, 3)
+
+	for i := 0; i < 3; i++ {
+		clientsSharedSecrets[i] = make([]SharedKey, 3)
+		serversSharedSecrets[i] = make([]SharedKey, 3)
+	}
+
+	for i := range clientsSharedSecrets {
+		for j := range serversSharedSecrets {
+			sharedSecret := make([]byte, 16)
+			rand.Read(sharedSecret)
+			clientsSharedSecrets[i][j] = sharedSecret
+			serversSharedSecrets[j][i] = sharedSecret
+		}
+	}
+
+	bigOneTwoThree := []*big.Int{
+		big.NewInt(1),
+		big.NewInt(2),
+		big.NewInt(3),
+	}
+
+	m0 := big.NewInt(0).Rand(rs, fieldOrder)
+	m0evals := RandomPolynomialEvals(1, bigOneTwoThree, m0)
+
+	require.Zero(t, m0.Cmp(big.NewInt(0).Mod(NevilleInterpolation(bigOneTwoThree[:2], m0evals[:2], big.NewInt(0)), fieldOrder)))
+
+	m1 := big.NewInt(0).Rand(rs, fieldOrder)
+	m1evals := RandomPolynomialEvals(1, bigOneTwoThree, m1)
+
+	s00Blind := big.NewInt(0)
+
+	// Note: in the implementation c0s0 should all get additional zero-shares on all indexes for anonymity
+	c0s0 := DeriveBlindingVector([]SharedKey{clientsSharedSecrets[0][0]}, 16, 3, fieldOrder)
+	s00Blind.Add(s00Blind, c0s0[0])
+	c0s0[0] = FieldAdd(c0s0[0], m0evals[0], fieldOrder)
+
+	c0s1 := DeriveBlindingVector([]SharedKey{clientsSharedSecrets[0][1]}, 16, 3, fieldOrder)
+	c0s1[0] = FieldAdd(c0s1[0], m0evals[1], fieldOrder)
+
+	c1s0 := DeriveBlindingVector([]SharedKey{clientsSharedSecrets[1][0]}, 16, 3, fieldOrder)
+	s00Blind.Add(s00Blind, c1s0[0])
+	c1s0[1] = FieldAdd(c1s0[1], m1evals[0], fieldOrder)
+
+	c1s1 := DeriveBlindingVector([]SharedKey{clientsSharedSecrets[1][1]}, 16, 3, fieldOrder)
+	c1s1[1] = FieldAdd(c1s1[1], m1evals[1], fieldOrder)
+
+	c2s0 := DeriveBlindingVector([]SharedKey{clientsSharedSecrets[2][0]}, 16, 3, fieldOrder)
+	s00Blind.Add(s00Blind, c2s0[0])
+	c2s1 := DeriveBlindingVector([]SharedKey{clientsSharedSecrets[2][1]}, 16, 3, fieldOrder)
+
+	// Aggregates
+	s0Vector := make([]*big.Int, 3)
+	for i := range s0Vector {
+		s0Vector[i] = big.NewInt(0)
+		s0Vector[i] = FieldAdd(s0Vector[i], c0s0[i], fieldOrder)
+		s0Vector[i] = FieldAdd(s0Vector[i], c1s0[i], fieldOrder)
+		s0Vector[i] = FieldAdd(s0Vector[i], c2s0[i], fieldOrder)
+	}
+
+	require.Zero(t, s0Vector[0].Cmp(FieldAdd(new(big.Int).Add(c0s0[0], c1s0[0]), c2s0[0], fieldOrder)))
+
+	s1Vector := make([]*big.Int, 3)
+	for i := range s1Vector {
+		s1Vector[i] = big.NewInt(0)
+		s1Vector[i] = FieldAdd(s1Vector[i], c0s1[i], fieldOrder)
+		s1Vector[i] = FieldAdd(s1Vector[i], c1s1[i], fieldOrder)
+		s1Vector[i] = FieldAdd(s1Vector[i], c2s1[i], fieldOrder)
+	}
+
+	s0UnblindingVector := DeriveBlindingVector(serversSharedSecrets[0], 16, 3, fieldOrder)
+	// sanity check
+	require.Zero(t, s00Blind.Mod(s00Blind, fieldOrder).Cmp(s0UnblindingVector[0]))
+	s1UnblindingVector := DeriveBlindingVector(serversSharedSecrets[1], 16, 3, fieldOrder)
+
+	for i := range s0Vector {
+		s0Vector[i] = FieldSub(s0Vector[i], s0UnblindingVector[i], fieldOrder)
+		s1Vector[i] = FieldSub(s1Vector[i], s1UnblindingVector[i], fieldOrder)
+	}
+
+	require.Zero(t, big.NewInt(0).Mod(NevilleInterpolation(bigOneTwoThree[:2], []*big.Int{s0Vector[0], s1Vector[0]}, big.NewInt(0)), fieldOrder).Cmp(m0))
+}
+
+
