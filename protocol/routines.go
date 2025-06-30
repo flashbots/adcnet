@@ -20,22 +20,19 @@ func (s *ServerMessager) UnblindPartialMessages(msgs []*ServerPartialDecryptionM
 	leaderUnblindIdx := slices.IndexFunc(msgs, func(msg *ServerPartialDecryptionMessage) bool { return msg.ServerID == s.ServerID })
 	leaderUnblind := msgs[leaderUnblindIdx]
 
-	// TODO
-	t := 1
-
 	xs := []*big.Int{}
-	for i := 0; i < t+1; i++ {
+	for i := 0; i < int(s.Config.MinServers); i++ {
 		xs = append(xs, big.NewInt(int64(msgs[i].ServerID)))
 	}
-	evals := make([]*big.Int, t+1)
+	evals := make([]*big.Int, int(s.Config.MinServers))
 	for chunk := range leaderUnblind.AuctionVector {
-		for i := 0; i < t+1; i++ {
+		for i := 0; i < int(s.Config.MinServers); i++ {
 			evals[i] = msgs[i].AuctionVector[chunk]
 		}
 		leaderUnblind.AuctionVector[chunk] = crypto.NevilleInterpolation(xs, evals, big.NewInt(0))
 	}
 	for chunk := range leaderUnblind.MessageVector {
-		for i := 0; i < t+1; i++ {
+		for i := 0; i < int(s.Config.MinServers); i++ {
 			evals[i] = msgs[i].MessageVector[chunk]
 		}
 		leaderUnblind.MessageVector[chunk] = crypto.NevilleInterpolation(xs, evals, big.NewInt(0))

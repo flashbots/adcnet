@@ -74,6 +74,7 @@ func TestE2E(t *testing.T) {
 		AuctionSlots:      10,
 		MessageSize:       3,
 		MessageFieldOrder: crypto.MessageFieldOrder,
+		MinServers: 2,
 	}
 
 	// client1PK, client1SK, _ := crypto.GenerateKeyPair()
@@ -222,6 +223,7 @@ func BenchmarkUnblindAggregate(b *testing.B) {
 							AuctionSlots:      10,
 							MessageSize:       uint32(msgVectorSlots),
 							MessageFieldOrder: fieldOrder,
+							MinServers: 2,
 						},
 						ServerID:      1,
 						SharedSecrets: sharedSecrets,
@@ -251,7 +253,7 @@ func BenchmarkUnblindMessages(b *testing.B) {
 	fieldOrder, _ := rand.Prime(rand.Reader, 513)
 	nClientBenches := []int{100, 10000}
 	msgSizeBenches := []int{100, 10000}
-	nServerBenches := []int{2, 4, 6}
+	nServerBenches := []int{2, 4, 10}
 
 	sharedSecrets := make(map[string]crypto.SharedKey)
 	userPKs := make([]crypto.PublicKey, slices.Max(nClientBenches))
@@ -281,6 +283,7 @@ func BenchmarkUnblindMessages(b *testing.B) {
 						AuctionSlots:      10,
 						MessageSize:       uint32(msgVectorSlots),
 						MessageFieldOrder: fieldOrder,
+						MinServers: uint32(nServers),
 					}
 
 					pdm := make([]*ServerPartialDecryptionMessage, nServers)

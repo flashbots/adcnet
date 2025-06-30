@@ -160,7 +160,11 @@ type ADCNetConfig struct {
 	// order to prevent deannonymization.
 	MinClients uint32
 
+	MinServers uint32
+
 	// RoundsPerWindow defines how many rounds are in a participation window
 	// for SPAM prevention.
 	RoundsPerWindow uint32
+
+	
 }
