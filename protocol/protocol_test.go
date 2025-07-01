@@ -38,7 +38,7 @@ func TestSecretSharingClient(t *testing.T) {
 
 	auctionIBF := blind_auction.NewIBFVector(config.AuctionSlots)
 	auctionIBF.InsertChunk((&blind_auction.AuctionData{
-		MessageHash: crypto.Hash{},
+		MessageHash: [32]byte{},
 		Weight:      10,
 		Size:        1,
 	}).EncodeToChunk())
@@ -56,13 +56,13 @@ func TestSecretSharingClient(t *testing.T) {
 	s1MessageBlindingVector := crypto.DeriveBlindingVector([]crypto.SharedKey{append([]byte{1}, sharedSecret("c1s1")...)}, 1, int32(config.MessageSize), crypto.MessageFieldOrder)
 	s2MessageBlindingVector := crypto.DeriveBlindingVector([]crypto.SharedKey{append([]byte{1}, sharedSecret("c1s2")...)}, 1, int32(config.MessageSize), crypto.MessageFieldOrder)
 
-	s1i0Eval := crypto.FieldSub(roundMessage[0].MessageVector[0], s1MessageBlindingVector[0], crypto.MessageFieldOrder)
-	s2i0Eval := crypto.FieldSub(roundMessage[1].MessageVector[0], s2MessageBlindingVector[0], crypto.MessageFieldOrder)
+	s1i0Eval := crypto.FieldSubInplace(new(big.Int).Set(roundMessage[0].MessageVector[0]), s1MessageBlindingVector[0], crypto.MessageFieldOrder)
+	s2i0Eval := crypto.FieldSubInplace(new(big.Int).Set(roundMessage[1].MessageVector[0]), s2MessageBlindingVector[0], crypto.MessageFieldOrder)
 
 	require.Zero(t, big.NewInt(0).Mod(crypto.NevilleInterpolation([]*big.Int{big.NewInt(1), big.NewInt(2)}, []*big.Int{s1i0Eval, s2i0Eval}, big.NewInt(0)), crypto.MessageFieldOrder).Cmp(big.NewInt(0)))
 
-	s1i1Eval := crypto.FieldSub(roundMessage[0].MessageVector[1], s1MessageBlindingVector[1], crypto.MessageFieldOrder)
-	s2i1Eval := crypto.FieldSub(roundMessage[1].MessageVector[1], s2MessageBlindingVector[1], crypto.MessageFieldOrder)
+	s1i1Eval := crypto.FieldSubInplace(new(big.Int).Set(roundMessage[0].MessageVector[1]), s1MessageBlindingVector[1], crypto.MessageFieldOrder)
+	s2i1Eval := crypto.FieldSubInplace(new(big.Int).Set(roundMessage[1].MessageVector[1]), s2MessageBlindingVector[1], crypto.MessageFieldOrder)
 
 	require.Zero(t, big.NewInt(0).Mod(crypto.NevilleInterpolation([]*big.Int{big.NewInt(1), big.NewInt(2)}, []*big.Int{s1i1Eval, s2i1Eval}, big.NewInt(0)), crypto.MessageFieldOrder).Cmp(big.NewInt(10)))
 
@@ -251,7 +251,7 @@ func BenchmarkUnblindMessages(b *testing.B) {
 	rs := mrand.New(mrand.NewSource(0))
 
 	fieldOrder, _ := rand.Prime(rand.Reader, 513)
-	nClientBenches := []int{100, 10000}
+	nClientBenches := []int{10000}
 	msgSizeBenches := []int{100, 10000}
 	nServerBenches := []int{2, 4, 10}
 
@@ -274,9 +274,9 @@ func BenchmarkUnblindMessages(b *testing.B) {
 		userPKs[i] = pubkey
 	}
 
+			for _, msgVectorSlots := range msgSizeBenches {
 	for _, nServers := range nServerBenches {
 		for _, nClients := range nClientBenches {
-			for _, msgVectorSlots := range msgSizeBenches {
 				b.Run(fmt.Sprintf("Unblind partial messages servers-%d-clients-%d-msg-%d-field-%d", nServers, nClients, msgVectorSlots, fieldOrder.BitLen()), func(b *testing.B) {
 
 					config := &ADCNetConfig{

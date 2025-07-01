@@ -87,11 +87,11 @@ func (s *ServerMessager) UnblindAggregate(currentRound int, aggregate *Aggregate
 	auctionBlindingVector := crypto.DeriveBlindingVector(auctionSharedSecrets, uint32(currentRound), int32(nEls), crypto.AuctionFieldOrder)
 
 	for i := range aggregate.MessageVector {
-		aggregate.MessageVector[i] = crypto.FieldSub(aggregate.MessageVector[i], messageBlindingVector[i], s.Config.MessageFieldOrder)
+		crypto.FieldSubInplace(aggregate.MessageVector[i], messageBlindingVector[i], s.Config.MessageFieldOrder)
 	}
 
 	for i := range aggregate.AuctionVector {
-		aggregate.AuctionVector[i] = crypto.FieldSub(aggregate.AuctionVector[i], auctionBlindingVector[i], crypto.AuctionFieldOrder)
+		crypto.FieldSubInplace(aggregate.AuctionVector[i], auctionBlindingVector[i], crypto.AuctionFieldOrder)
 	}
 
 	return &ServerPartialDecryptionMessage{
@@ -254,7 +254,7 @@ func (c *ClientMessager) SecretShareMessage(currentRound int, messageElements []
 		mEvals := crypto.RandomPolynomialEvals(1, serverXs, messageElements[i])
 		for j := 0; j < len(messageVectors); j++ {
 			msgVector := messageVectors[int32(serverXs[j].Int64())]
-			msgVector[i] = crypto.FieldAdd(msgVector[i], mEvals[j], crypto.MessageFieldOrder)
+			crypto.FieldAddInplace(msgVector[i], mEvals[j], crypto.MessageFieldOrder)
 		}
 	}
 	for i, auctionEl := range auctionElements {
@@ -262,7 +262,7 @@ func (c *ClientMessager) SecretShareMessage(currentRound int, messageElements []
 		elEvals := crypto.RandomPolynomialEvals(1, serverXs, auctionEl)
 		for j := 0; j < len(auctionVectors); j++ {
 			auctionVector := auctionVectors[int32(serverXs[j].Int64())]
-			auctionVector[i] = crypto.FieldAdd(auctionVector[i], elEvals[j], crypto.AuctionFieldOrder)
+			crypto.FieldAddInplace(auctionVector[i], elEvals[j], crypto.AuctionFieldOrder)
 		}
 	}
 

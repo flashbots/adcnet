@@ -5,15 +5,13 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"sort"
-
-	"github.com/flashbots/adcnet/crypto"
 )
 
 // AuctionData contains bid information for message scheduling.
 // Hash provides message binding but not privacy.
 // Weights are visible after IBF decryption.
 type AuctionData struct {
-	MessageHash crypto.Hash
+	MessageHash [32]byte
 	Weight      uint32
 	Size        uint32
 }

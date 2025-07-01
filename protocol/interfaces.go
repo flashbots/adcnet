@@ -165,6 +165,4 @@ type ADCNetConfig struct {
 	// RoundsPerWindow defines how many rounds are in a participation window
 	// for SPAM prevention.
 	RoundsPerWindow uint32
-
-	
 }

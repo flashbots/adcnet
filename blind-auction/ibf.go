@@ -6,8 +6,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math/big"
-
-	"github.com/flashbots/adcnet/crypto"
 )
 
 const IBFNChunks int = 3 // TODO: rename to levels
@@ -68,41 +66,6 @@ func NewIBFVector(messageSlots uint32) *IBFVector {
 	return res
 }
 
-// Clone creates a deep copy of the IBF vector.
-func (v *IBFVector) Clone() *IBFVector {
-	newCopy := &IBFVector{}
-	for level := range v.Chunks {
-		newCopy.Counters[level] = make([]uint64, len(v.Counters[level]))
-		copy(newCopy.Counters[level], v.Counters[level])
-
-		newCopy.Chunks[level] = make([][IBFChunkSize]byte, len(v.Chunks[level]))
-		for i := range v.Chunks[level] {
-			copy(newCopy.Chunks[level][i][:], v.Chunks[level][i][:])
-		}
-	}
-
-	return newCopy
-}
-
-// Bytes serializes the IBF vector to a byte slice.
-func (v *IBFVector) Bytes() []byte {
-	res := binary.BigEndian.AppendUint32([]byte{}, uint32(len(v.Chunks)))
-	res = binary.BigEndian.AppendUint32(res, uint32(len(v.Chunks[0])))
-	for level := range v.Chunks {
-		for chunk := range v.Chunks[level] {
-			res = append(res, v.Chunks[level][chunk][:]...)
-		}
-	}
-
-	for level := range v.Counters {
-		for i := range v.Counters[level] {
-			res = binary.BigEndian.AppendUint64(res, v.Counters[level][i])
-		}
-	}
-
-	return res
-}
-
 // InsertChunk inserts a chunk into the IBF at appropriate positions across all levels.
 func (v *IBFVector) InsertChunk(msg [IBFChunkSize]byte) {
 	for level := 0; level < IBFNChunks; level++ {
@@ -110,11 +73,12 @@ func (v *IBFVector) InsertChunk(msg [IBFChunkSize]byte) {
 		indexSeed := sha256.Sum256(dataToHash)
 		index := uint64(binary.BigEndian.Uint64(indexSeed[0:8])) % uint64(len(v.Chunks[level]))
 
-		crypto.XorInplace(v.Chunks[level][index][:], msg[:])
+		XorInplace(v.Chunks[level][index][:], msg[:])
 		v.Counters[level][index] += 1
 	}
 }
 
+// TODO: encode chunks and counters separately maybe?
 func (v *IBFVector) EncodeAsFieldElements() []*big.Int {
 	res := []*big.Int{}
 	for level := range v.Chunks {
@@ -151,20 +115,6 @@ func (v *IBFVector) DecodeFromElements(elements []*big.Int) *IBFVector {
 
 	return v
 }
-
-/*
-// UnionInplace merges another IBF into this one by XORing chunks and adding counters.
-func (v *IBFVector) UnionInplace(other *IBFVector) *IBFVector {
-	for level := range v.Counters {
-		for chunk := range v.Chunks[level] {
-			crypto.XorInplace(v.Chunks[level][chunk][:], other.Chunks[level][chunk][:])
-			v.Counters[level][chunk] = AddBlindedCounters(v.Counters[level][chunk], other.Counters[level][chunk])
-		}
-	}
-
-	return v
-}
-*/
 
 // Recover attempts to extract all elements from the IBF.
 // No guarantee of complete recovery or detection of missing elements.
@@ -212,7 +162,7 @@ func (v *IBFVector) Recover() [][IBFChunkSize]byte {
 						innerIndex := uint64(binary.BigEndian.Uint64(innerIndexSeed[0:8])) % uint64(len(v.Chunks[innerLevel]))
 
 						// XOR out the chunk from this cell
-						crypto.XorInplace(workingCopy.Chunks[innerLevel][innerIndex][:], chunk[:])
+						XorInplace(workingCopy.Chunks[innerLevel][innerIndex][:], chunk[:])
 
 						// Decrement the counter
 						workingCopy.Counters[innerLevel][innerIndex]--
@@ -233,4 +183,32 @@ func (v *IBFVector) Recover() [][IBFChunkSize]byte {
 	}
 
 	return recovered
+}
+
+func XorInplace(data []byte, key []byte) {
+	if len(data) != len(key) {
+		panic("xor of unequal length, refusing to continue")
+	}
+	for i := range data {
+		data[i] ^= key[i]
+	}
+}
+
+// Bytes serializes the IBF vector to a byte slice.
+func (v *IBFVector) Bytes() []byte {
+       res := binary.BigEndian.AppendUint32([]byte{}, uint32(len(v.Chunks)))
+       res = binary.BigEndian.AppendUint32(res, uint32(len(v.Chunks[0])))
+       for level := range v.Chunks {
+               for chunk := range v.Chunks[level] {
+                       res = append(res, v.Chunks[level][chunk][:]...)
+               }
+       }
+
+       for level := range v.Counters {
+               for i := range v.Counters[level] {
+                       res = binary.BigEndian.AppendUint64(res, v.Counters[level][i])
+               }
+       }
+
+       return res
 }

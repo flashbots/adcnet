@@ -100,10 +100,10 @@ func (m *AggregatedClientMessages) UnionInplace(o *AggregatedClientMessages) *Ag
 	}
 
 	for i := range o.AuctionVector {
-		m.AuctionVector[i] = crypto.FieldAdd(m.AuctionVector[i], o.AuctionVector[i], crypto.AuctionFieldOrder)
+		crypto.FieldAddInplace(m.AuctionVector[i], o.AuctionVector[i], crypto.AuctionFieldOrder)
 	}
 	for i := range o.MessageVector {
-		m.MessageVector[i] = crypto.FieldAdd(m.MessageVector[i], o.MessageVector[i], crypto.MessageFieldOrder)
+		crypto.FieldAddInplace(m.MessageVector[i], o.MessageVector[i], crypto.MessageFieldOrder)
 	}
 
 	m.UserPKs = append(m.UserPKs, o.UserPKs...)

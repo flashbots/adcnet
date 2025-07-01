@@ -4,44 +4,10 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"slices"
 )
-
-// Hash represents a cryptographic hash value using SHA-256 (32 bytes).
-// It's used throughout ADCNet for deriving identifiers, computing message
-// digests, and as part of various cryptographic operations.
-type Hash [32]byte
-
-// NewHash creates a Hash from the given data using SHA-256.
-// This function is deterministic - the same input will always produce
-// the same output hash.
-func NewHash(data []byte) Hash {
-	return sha256.Sum256(data)
-}
-
-// Bytes returns the hash as a byte slice.
-// This is useful when the hash needs to be used in contexts that
-// expect a slice rather than a fixed-size array.
-func (h Hash) Bytes() []byte {
-	return h[:]
-}
-
-// Equal compares two hashes for equality in constant time.
-// The constant-time comparison helps prevent timing attacks that
-// could leak information about the hash values being compared.
-func (h Hash) Equal(other Hash) bool {
-	return subtle.ConstantTimeCompare(h[:], other[:]) == 1
-}
-
-// String returns a hex-encoded string representation of the hash.
-// This is useful for logging and debugging.
-func (h Hash) String() string {
-	return hex.EncodeToString(h[:])
-}
 
 // PublicKey represents a public key used for authentication and encryption.
 // In ADCNet, public keys are used to verify signatures and as client/server identifiers.
@@ -185,25 +151,4 @@ func NewSharedKey(data []byte) SharedKey {
 // This is useful when the key needs to be used in cryptographic operations.
 func (sk SharedKey) Bytes() []byte {
 	return slices.Clone(sk)
-}
-
-func Xor(data []byte, key []byte) []byte {
-	res := slices.Clone(data)
-	if len(data) != len(key) {
-		panic("xor of unequal length, refusing to continue")
-	}
-	for i := range data {
-		res[i] ^= key[i]
-	}
-
-	return res
-}
-
-func XorInplace(data []byte, key []byte) {
-	if len(data) != len(key) {
-		panic("xor of unequal length, refusing to continue")
-	}
-	for i := range data {
-		data[i] ^= key[i]
-	}
 }
