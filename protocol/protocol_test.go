@@ -192,7 +192,7 @@ func BenchmarkUnblindAggregate(b *testing.B) {
 		fieldOrders = append(fieldOrders, fo)
 	}
 	nClientBenches := []int{100, 1000, 10000}
-	msgSizeBenches := []int{100, 2000 /* 1MB */, 10000 /* 5MB */}
+	msgSizeBenches := []int{100, 2000, 10000 /* 640KB */}
 
 	sharedSecrets := make(map[string]crypto.SharedKey)
 	userPKs := make([]crypto.PublicKey, slices.Max(nClientBenches))
