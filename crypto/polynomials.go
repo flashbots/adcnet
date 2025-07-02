@@ -6,8 +6,10 @@ import (
 	"math/big"
 )
 
-// Not very optimal, but does not do excessive allocations
-func NevilleInterpolation(xs []*big.Int, ys []*big.Int, x *big.Int) *big.Int {
+// NevilleInterpolation performs polynomial interpolation using Neville's algorithm.
+// Given points (xs[i], ys[i]), it computes the value of the interpolating polynomial at x.
+// The result is computed modulo fieldOrder for finite field arithmetic.
+func NevilleInterpolation(xs []*big.Int, ys []*big.Int, x *big.Int, fieldOrder *big.Int) *big.Int {
 	// tmps
 	ik := new(big.Rat)
 	dm := new(big.Int)
@@ -36,9 +38,18 @@ func NevilleInterpolation(xs []*big.Int, ys []*big.Int, x *big.Int) *big.Int {
 		}
 	}
 	
-	return bigOne.Div(ps[0].Num(), ps[0].Denom())
+	// Convert rational result to field element: (num * denom^-1) mod fieldOrder
+	result := new(big.Int).Set(ps[0].Num())
+	denomInv := new(big.Int).ModInverse(ps[0].Denom(), fieldOrder)
+	if denomInv != nil {
+		result.Mul(result, denomInv)
+		result.Mod(result, fieldOrder)
+	}
+	return result
 }
 
+// SharedSecretsGenerator computes a PRF-based generator from shared secrets and round number.
+// The generator is used to derive deterministic pseudo-random values.
 func SharedSecretsGenerator(sharedSecrets []SharedKey, round *big.Int, fieldOrder *big.Int) *big.Int {
 	el := new(big.Int)
 	secretElementGenerator := new(big.Int).Set(prfSeed)
@@ -54,6 +65,9 @@ func SharedSecretsGenerator(sharedSecrets []SharedKey, round *big.Int, fieldOrde
 	return secretElementGenerator
 }
 
+// DeriveBlindingVector generates a vector of blinding factors from shared secrets.
+// The blinding factors are deterministically derived for the given round and can be
+// used to blind and unblind values in the ADCNet protocol.
 func DeriveBlindingVector(sharedSecrets []SharedKey, round uint32, nEls int32, fieldOrder *big.Int) []*big.Int {
 	buf := make([]big.Int, nEls)
 	res := make([]*big.Int, nEls)
@@ -69,6 +83,8 @@ func DeriveBlindingVector(sharedSecrets []SharedKey, round uint32, nEls int32, f
 	return res
 }
 
+// DeriveBlindingVectorInplace computes blinding factors in-place for a range of indices.
+// This is used internally by DeriveBlindingVector and can be parallelized by chunking.
 func DeriveBlindingVectorInplace(res []*big.Int, secretElementGenerator *big.Int, round *big.Int, start int, end int, fieldOrder *big.Int) {
 	nonceBuf := make([]byte, 8)
 	binary.BigEndian.PutUint32(nonceBuf, uint32(round.Int64()))
@@ -86,8 +102,8 @@ func DeriveBlindingVectorInplace(res []*big.Int, secretElementGenerator *big.Int
 }
 
 // RandomPolynomialEvals generates a random polynomial of given degree that evaluates
-// to evalAtZero at x=0, and returns its evaluations at the given x values
-func RandomPolynomialEvals(deg int, xs []*big.Int, evalAtZero *big.Int) []*big.Int {
+// to evalAtZero at x=0, and returns its evaluations at the given x values.
+func RandomPolynomialEvals(deg int, xs []*big.Int, evalAtZero *big.Int, fieldOrder *big.Int) []*big.Int {
 	ys := make([]*big.Int, len(xs))
 	as := make([]*big.Int, deg+1)
 
@@ -117,4 +133,3 @@ func RandomPolynomialEvals(deg int, xs []*big.Int, evalAtZero *big.Int) []*big.I
 
 	return ys
 }
-

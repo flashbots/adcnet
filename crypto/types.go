@@ -1,9 +1,9 @@
 package crypto
 
 import (
-	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"slices"
@@ -22,6 +22,7 @@ func NewPublicKeyFromBytes(data []byte) PublicKey {
 	return PublicKey(pk)
 }
 
+// NewPublicKeyFromString creates a PublicKey from a hex-encoded string.
 func NewPublicKeyFromString(data string) (PublicKey, error) {
 	rawBytes, err := hex.DecodeString(data)
 	if err != nil {
@@ -40,10 +41,10 @@ func (pk PublicKey) Bytes() []byte {
 // Equal compares two public keys for equality.
 // Two public keys are equal if they contain exactly the same bytes.
 func (pk PublicKey) Equal(other PublicKey) bool {
-	return bytes.Equal(pk, other)
+	return subtle.ConstantTimeCompare(pk, other) == 0
 }
 
-// String returns a base64-encoded string representation of the public key.
+// String returns a hex-encoded string representation of the public key.
 // This is useful for logging, displaying to users, and using as a map key.
 func (pk PublicKey) String() string {
 	return hex.EncodeToString(pk)
@@ -71,7 +72,6 @@ func (sk PrivateKey) Bytes() []byte {
 
 // PublicKey derives the public key corresponding to this private key.
 // For Ed25519, the public key is contained within the private key structure.
-// Returns an error if the private key has an invalid format.
 func (sk PrivateKey) PublicKey() (PublicKey, error) {
 	if len(sk) < ed25519.PrivateKeySize {
 		return nil, errors.New("invalid private key size")
@@ -81,7 +81,6 @@ func (sk PrivateKey) PublicKey() (PublicKey, error) {
 
 // GenerateKeyPair generates a new Ed25519 key pair for signing and verification.
 // The generated keys are cryptographically secure for use in the ADCNet protocol.
-// Returns the public key, private key, and any error that occurred during generation.
 func GenerateKeyPair() (PublicKey, PrivateKey, error) {
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -110,20 +109,18 @@ func (s Signature) Bytes() []byte {
 }
 
 // Verify checks if this signature is valid for the given data and public key.
-// Returns true if the signature is valid, false otherwise.
 // This is used to verify the authenticity of messages in the ADCNet protocol.
 func (s Signature) Verify(publicKey PublicKey, data []byte) bool {
 	return ed25519.Verify(ed25519.PublicKey(publicKey), data, s)
 }
 
-// String returns a base64-encoded string representation of the signature.
+// String returns a hex-encoded string representation of the signature.
 // This is useful for logging and debugging.
 func (s Signature) String() string {
 	return hex.EncodeToString(s.Bytes())
 }
 
 // Sign signs data with the given private key using Ed25519.
-// Returns the signature and any error that occurred during signing.
 // In ADCNet, this is used by clients, aggregators, and servers to sign their messages.
 func Sign(privateKey PrivateKey, data []byte) (Signature, error) {
 	if len(privateKey) != ed25519.PrivateKeySize {

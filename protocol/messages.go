@@ -10,16 +10,14 @@ import (
 	"github.com/flashbots/adcnet/crypto"
 )
 
-// Signed provides authentication for protocol messages.
-// Security: Uses Ed25519 signatures. Assumes private keys are secure.
-// Note: Signature covers serialized object + public key to prevent substitution.
+// Signed wraps a message with Ed25519 signature for authentication.
 type Signed[T any] struct {
 	PublicKey crypto.PublicKey `json:"public_key"`
 	Signature crypto.Signature `json:"signature"`
 	Object    *T               `json:"object"`
 }
 
-// NewSigned creates a signed message.
+// NewSigned creates an authenticated message by signing the serialized object and public key.
 func NewSigned[T any](privkey crypto.PrivateKey, obj *T) (*Signed[T], error) {
 	pubkey, err := privkey.PublicKey()
 	if err != nil {
@@ -43,12 +41,12 @@ func NewSigned[T any](privkey crypto.PrivateKey, obj *T) (*Signed[T], error) {
 	}, nil
 }
 
-// UnsafeObject returns the object without signature verification.
+// UnsafeObject returns the wrapped object without verifying the signature.
 func (s *Signed[T]) UnsafeObject() *T {
 	return s.Object
 }
 
-// Recover verifies the signature and returns the object and signer's public key.
+// Recover verifies the signature and returns the authenticated object with signer's public key.
 func (s *Signed[T]) Recover() (*T, crypto.PublicKey, error) {
 	serializedData, err := SerializeMessage(s.Object)
 	if err != nil {
@@ -57,13 +55,13 @@ func (s *Signed[T]) Recover() (*T, crypto.PublicKey, error) {
 
 	ok := s.Signature.Verify(s.PublicKey, append(serializedData, s.PublicKey...))
 	if !ok {
-		return nil, nil, errors.New("siganture not valid")
+		return nil, nil, errors.New("signature not valid")
 	}
 
 	return s.Object, s.PublicKey, nil
 }
 
-// ClientRoundMessage contains a client's encrypted message and auction bid for a round.
+// ClientRoundMessage contains a client's secret share for one server.
 type ClientRoundMessage struct {
 	RoundNumber   int
 	ServerID      int32
@@ -71,7 +69,7 @@ type ClientRoundMessage struct {
 	MessageVector []*big.Int
 }
 
-// AggregatedClientMessages contains aggregated messages from multiple clients.
+// AggregatedClientMessages contains summed shares from multiple clients.
 type AggregatedClientMessages struct {
 	RoundNumber   int
 	ServerID      int32
@@ -80,6 +78,8 @@ type AggregatedClientMessages struct {
 	UserPKs       []crypto.PublicKey
 }
 
+// UnionInplace adds another aggregate's vectors to this one in-place.
+// Performs field addition for both auction and message vectors.
 func (m *AggregatedClientMessages) UnionInplace(o *AggregatedClientMessages) *AggregatedClientMessages {
 	// Should probably assert they are equal
 	m.RoundNumber = o.RoundNumber
@@ -111,7 +111,7 @@ func (m *AggregatedClientMessages) UnionInplace(o *AggregatedClientMessages) *Ag
 	return m
 }
 
-// ServerPartialDecryptionMessage contains a server's partial decryption share.
+// ServerPartialDecryptionMessage contains a server's unblinded share for threshold reconstruction.
 type ServerPartialDecryptionMessage struct {
 	ServerID          int32
 	OriginalAggregate *AggregatedClientMessages
@@ -120,42 +120,35 @@ type ServerPartialDecryptionMessage struct {
 	MessageVector     []*big.Int
 }
 
-// ServerRoundData contains the final decrypted round output.
+// ServerRoundData contains the final reconstructed broadcast for a round.
 type ServerRoundData struct {
 	RoundNumber   int
 	AuctionVector *blind_auction.IBFVector
 	MessageVector []byte
 }
 
-// AggregatorRegistrationBlob contains the public key and metadata for an aggregator.
-// This is used during the setup phase to register aggregators with servers.
+// AggregatorRegistrationBlob registers an aggregator with servers during setup.
 type AggregatorRegistrationBlob struct {
-	// PublicKey is the aggregator's signing public key
-	// This is used to verify signatures on aggregated messages
+	// PublicKey authenticates aggregated messages
 	PublicKey crypto.PublicKey `json:"public_key"`
 
-	// Level indicates the position in the aggregation hierarchy
-	// Level 0 indicates a leaf aggregator that receives directly from clients
+	// Level indicates position in aggregation hierarchy (0 = leaf)
 	Level uint32 `json:"level"`
 }
 
-// ServerRegistrationBlob contains the public keys and metadata for an anytrust server.
-// This is used during the setup phase to register servers with each other.
+// ServerRegistrationBlob registers a server in the anytrust group during setup.
 type ServerRegistrationBlob struct {
-	// PublicKey is the server's signing public key
-	// This is used to verify signatures on unblinded shares
+	// PublicKey authenticates partial decryption shares
 	PublicKey crypto.PublicKey `json:"public_key"`
 
-	// KemPublicKey is the server's key exchange public key
-	// This is used to establish shared secrets with clients
+	// KemPublicKey establishes shared secrets with clients
 	KemPublicKey crypto.PublicKey `json:"kem_public_key"`
 
-	// IsLeader indicates if this server is the leader of its anytrust group
-	// The leader is responsible for collecting shares and producing the final output
+	// IsLeader indicates if this server collects shares and produces final output
 	IsLeader bool `json:"is_leader"`
 }
 
-// UnmarshalMessage deserializes a message from JSON bytes.
+// UnmarshalMessage deserializes a message from JSON.
 func UnmarshalMessage[T any](data []byte) (*T, error) {
 	var msg T
 	err := json.Unmarshal(data, &msg)
@@ -169,7 +162,7 @@ func DecodeMessage[T any](reader io.Reader) (*T, error) {
 	return &msg, err
 }
 
-// SerializeMessage serializes a message to JSON bytes.
+// SerializeMessage serializes a message to JSON.
 func SerializeMessage[T any](msg *T) ([]byte, error) {
 	return json.Marshal(msg)
 }

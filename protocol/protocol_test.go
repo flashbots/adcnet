@@ -23,13 +23,11 @@ func sharedSecret(path string) crypto.SharedKey {
 
 func TestSecretSharingClient(t *testing.T) {
 	config := &ADCNetConfig{
-		AuctionSlots:      3,
+		AuctionSlots:      10,
 		MessageSize:       3,
+		MinServers: 2,
 		MessageFieldOrder: crypto.MessageFieldOrder,
 	}
-
-	// client1PK, client1SK, _ := crypto.GenerateKeyPair()
-	// client2PK, client2SK, _ := crypto.GenerateKeyPair()
 
 	c := &ClientMessager{
 		Config:        config,
@@ -53,18 +51,18 @@ func TestSecretSharingClient(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, roundMessage, 3)
 
-	s1MessageBlindingVector := crypto.DeriveBlindingVector([]crypto.SharedKey{append([]byte{1}, sharedSecret("c1s1")...)}, 1, int32(config.MessageSize), crypto.MessageFieldOrder)
-	s2MessageBlindingVector := crypto.DeriveBlindingVector([]crypto.SharedKey{append([]byte{1}, sharedSecret("c1s2")...)}, 1, int32(config.MessageSize), crypto.MessageFieldOrder)
+	s1MessageBlindingVector := crypto.DeriveBlindingVector([]crypto.SharedKey{append([]byte{1}, sharedSecret("c1s1")...)}, 1, int32(config.MessageSize), config.MessageFieldOrder)
+	s2MessageBlindingVector := crypto.DeriveBlindingVector([]crypto.SharedKey{append([]byte{1}, sharedSecret("c1s2")...)}, 1, int32(config.MessageSize), config.MessageFieldOrder)
 
-	s1i0Eval := crypto.FieldSubInplace(new(big.Int).Set(roundMessage[0].MessageVector[0]), s1MessageBlindingVector[0], crypto.MessageFieldOrder)
-	s2i0Eval := crypto.FieldSubInplace(new(big.Int).Set(roundMessage[1].MessageVector[0]), s2MessageBlindingVector[0], crypto.MessageFieldOrder)
+	s1i0Eval := crypto.FieldSubInplace(new(big.Int).Set(roundMessage[0].MessageVector[0]), s1MessageBlindingVector[0], config.MessageFieldOrder)
+	s2i0Eval := crypto.FieldSubInplace(new(big.Int).Set(roundMessage[1].MessageVector[0]), s2MessageBlindingVector[0], config.MessageFieldOrder)
 
-	require.Zero(t, big.NewInt(0).Mod(crypto.NevilleInterpolation([]*big.Int{big.NewInt(1), big.NewInt(2)}, []*big.Int{s1i0Eval, s2i0Eval}, big.NewInt(0)), crypto.MessageFieldOrder).Cmp(big.NewInt(0)))
+	require.Zero(t, crypto.NevilleInterpolation([]*big.Int{big.NewInt(1), big.NewInt(2)}, []*big.Int{s1i0Eval, s2i0Eval}, big.NewInt(0), config.MessageFieldOrder).Cmp(big.NewInt(0)))
 
-	s1i1Eval := crypto.FieldSubInplace(new(big.Int).Set(roundMessage[0].MessageVector[1]), s1MessageBlindingVector[1], crypto.MessageFieldOrder)
-	s2i1Eval := crypto.FieldSubInplace(new(big.Int).Set(roundMessage[1].MessageVector[1]), s2MessageBlindingVector[1], crypto.MessageFieldOrder)
+	s1i1Eval := crypto.FieldSubInplace(new(big.Int).Set(roundMessage[0].MessageVector[1]), s1MessageBlindingVector[1], config.MessageFieldOrder)
+	s2i1Eval := crypto.FieldSubInplace(new(big.Int).Set(roundMessage[1].MessageVector[1]), s2MessageBlindingVector[1], config.MessageFieldOrder)
 
-	require.Zero(t, big.NewInt(0).Mod(crypto.NevilleInterpolation([]*big.Int{big.NewInt(1), big.NewInt(2)}, []*big.Int{s1i1Eval, s2i1Eval}, big.NewInt(0)), crypto.MessageFieldOrder).Cmp(big.NewInt(10)))
+	require.Zero(t, crypto.NevilleInterpolation([]*big.Int{big.NewInt(1), big.NewInt(2)}, []*big.Int{s1i1Eval, s2i1Eval}, big.NewInt(0), config.MessageFieldOrder).Cmp(big.NewInt(10)))
 
 	// TODO: add a second client!
 }

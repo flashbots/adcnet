@@ -54,8 +54,8 @@ func TestIBFUnion(t *testing.T) {
 	ibf2 := NewIBFVector(14)
 
 	// Generate random chunks for each IBF
-	chunks1 := make([][IBFChunkSize]byte, 3)
-	chunks2 := make([][IBFChunkSize]byte, 3)
+	chunks1 := make([][IBFChunkSize]byte, IBFNChunks)
+	chunks2 := make([][IBFChunkSize]byte, IBFNChunks)
 
 	for i := range chunks1 {
 		rand.Read(chunks1[i][:])

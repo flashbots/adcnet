@@ -3,7 +3,7 @@
 [![Goreport status](https://goreportcard.com/badge/github.com/ruteri/auction-based-dcnet)](https://goreportcard.com/report/github.com/ruteri/auction-based-dcnet)
 [![Test status](https://github.com/ruteri/auction-based-dcnet/workflows/Checks/badge.svg?branch=main)](https://github.com/ruteri/auction-based-dcnet/actions?query=workflow%3A%22Checks%22)
 
-Auction-based DCNet is a Golang implementation of the "ZIPNet: Low-bandwidth anonymous broadcast from (dis)Trusted Execution Environments" protocol. It provides an efficient, scalable, and robust anonymous broadcast channel with high trust diversity and low bandwidth requirements.
+Auction-based DCNet is a Golang implementation of a protocol loosely based on the "ZIPNet: Low-bandwidth anonymous broadcast from (dis)Trusted Execution Environments" protocol.
 
 ## Overview
 
@@ -67,17 +67,6 @@ This Go implementation provides:
 - Support for dynamic message sizes
 
 ## Getting Started
-
-### Prerequisites
-
-- Go 1.18 or higher
-- For client functionality: Access to a TEE (SGX, TrustZone, etc.)
-
-### Installation
-
-```bash
-go get github.com/ruteri/auction-based-dcnet
-```
 
 ## Security Considerations
 

@@ -1,20 +1,31 @@
-// Package crypto provides cryptographic primitives used by the ADCNet protocol.
+// Package crypto provides cryptographic primitives for secure anonymous communication.
 //
-// This package implements the core cryptographic operations required for the
-// ADCNet anonymous broadcast protocol, including:
+// This package implements the core cryptographic operations required for
+// anonymous broadcast protocols, including:
 //
-// - Secure hashing (SHA-256)
-// - Public-key cryptography (Ed25519)
-// - Digital signatures and verification
-// - Shared secret derivation
-// - Key ratcheting for forward secrecy
-// - Nonces for rate limiting
-// - Footprints for slot reservation
+//   - Field arithmetic for finite field operations
+//   - Polynomial interpolation for secret sharing (Shamir's Secret Sharing)
+//   - Key encapsulation mechanisms (X25519) for shared secret derivation
+//   - Digital signatures (Ed25519) for authentication
+//   - Blinding vector generation for privacy-preserving aggregation
 //
-// The crypto types in this package are designed to be used together with the
-// ADCNet protocol components (clients, aggregators, and servers) to provide
-// anonymous communication with strong security guarantees.
+// The crypto package provides low-level primitives that are used by higher-level
+// protocol implementations.
+// Note: not all cryptographic operations are constant-time (in particular field and polynomial math)
 //
-// Most users will interact with these primitives through the CryptoProvider
-// interface in the adcnet package, rather than directly.
+// Field Operations
+//
+// The package supports operations in two finite fields:
+//   - MessageFieldOrder: A 513-bit field for encoding 512-bit message chunks
+//   - AuctionFieldOrder: A 384-bit field for auction-related operations
+//
+// Secret Sharing
+//
+// Polynomial-based secret sharing is implemented using Neville interpolation,
+// allowing efficient reconstruction of secrets from threshold shares.
+//
+// Key Management
+//
+// The package provides Ed25519 for signing operations and X25519 for key exchange.
+// All keys include helper methods for serialization and comparison.
 package crypto

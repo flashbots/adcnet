@@ -1,4 +1,3 @@
-// crypto/kem.go
 package crypto
 
 import (
