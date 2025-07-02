@@ -4,8 +4,11 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"math/big"
+
+	"github.com/flashbots/adcnet/crypto"
 )
 
 const IBFNChunks int = 3 // TODO: rename to levels
@@ -66,14 +69,25 @@ func NewIBFVector(messageSlots uint32) *IBFVector {
 	return res
 }
 
+func ChunkToElement(data [IBFChunkSize]byte) *big.Int {
+	return new(big.Int).SetBytes(data[:])
+}
+
+func ElementToChunk(el *big.Int) [IBFChunkSize]byte {
+    var data [IBFChunkSize]byte
+    el.FillBytes(data[:]) // preserves leading zeroes!
+    return data
+}
+
 // InsertChunk inserts a chunk into the IBF at appropriate positions across all levels.
 func (v *IBFVector) InsertChunk(msg [IBFChunkSize]byte) {
+	msgAsEl := ChunkToElement(msg)
 	for level := 0; level < IBFNChunks; level++ {
-		dataToHash := append([]byte(fmt.Sprintf("%d", level)), msg[:]...)
-		indexSeed := sha256.Sum256(dataToHash)
-		index := uint64(binary.BigEndian.Uint64(indexSeed[0:8])) % uint64(len(v.Chunks[level]))
+		index := ChunkIndex(msg, level, len(v.Chunks[level]))
 
-		XorInplace(v.Chunks[level][index][:], msg[:])
+		currentEl := ChunkToElement(v.Chunks[level][index])
+		crypto.FieldAddInplace(currentEl, msgAsEl, crypto.AuctionFieldOrder)
+		v.Chunks[level][index] = ElementToChunk(currentEl)
 		v.Counters[level][index] += 1
 	}
 }
@@ -83,7 +97,7 @@ func (v *IBFVector) EncodeAsFieldElements() []*big.Int {
 	res := []*big.Int{}
 	for level := range v.Chunks {
 		for chunk := range v.Chunks[level] {
-			res = append(res, new(big.Int).SetBytes(v.Chunks[level][chunk][:]))
+			res = append(res, ChunkToElement(v.Chunks[level][chunk]))
 		}
 	}
 
@@ -101,7 +115,7 @@ func (v *IBFVector) DecodeFromElements(elements []*big.Int) *IBFVector {
 	index := uint32(0)
 	for level := range v.Chunks {
 		for chunk := range v.Chunks[level] {
-			copy(v.Chunks[level][chunk][:], elements[index].Bytes())
+			v.Chunks[level][chunk] = ElementToChunk(elements[index])
 			index += 1
 		}
 	}
@@ -116,9 +130,15 @@ func (v *IBFVector) DecodeFromElements(elements []*big.Int) *IBFVector {
 	return v
 }
 
+func ChunkIndex(chunk [IBFChunkSize]byte, level int, itemsInLevel int) uint64 {
+	dataToHash := append([]byte(fmt.Sprintf("%d", level)), chunk[:]...)
+	innerIndexSeed := sha256.Sum256(dataToHash)
+	return uint64(binary.BigEndian.Uint64(innerIndexSeed[0:8])) % uint64(itemsInLevel)
+}
+
 // Recover attempts to extract all elements from the IBF.
 // No guarantee of complete recovery or detection of missing elements.
-func (v *IBFVector) Recover() [][IBFChunkSize]byte {
+func (v *IBFVector) Recover() ([][IBFChunkSize]byte, error) {
 	// Create a copy of the IBF to work with during recovery
 	// so we don't modify the original
 	workingCopy := &IBFVector{}
@@ -154,17 +174,22 @@ func (v *IBFVector) Recover() [][IBFChunkSize]byte {
 
 					// Record this chunk as recovered
 					recovered = append(recovered, chunk)
+					chunkAsEl := ChunkToElement(chunk)
 
 					// Remove this chunk from all levels to continue peeling
 					for innerLevel := range workingCopy.Chunks {
-						dataToHash := append([]byte(fmt.Sprintf("%d", innerLevel)), chunk[:]...)
-						innerIndexSeed := sha256.Sum256(dataToHash)
-						innerIndex := uint64(binary.BigEndian.Uint64(innerIndexSeed[0:8])) % uint64(len(v.Chunks[innerLevel]))
-
-						// XOR out the chunk from this cell
-						XorInplace(workingCopy.Chunks[innerLevel][innerIndex][:], chunk[:])
+						innerIndex := ChunkIndex(chunk, innerLevel, len(workingCopy.Chunks[innerLevel]))
 
 						// Decrement the counter
+						if workingCopy.Counters[innerLevel][innerIndex] == 0 {
+							return nil, errors.New("unexpected zero counter while recovering IBF")
+						}
+
+						// Remove the chunk from this cell
+						currentEl := ChunkToElement(workingCopy.Chunks[innerLevel][innerIndex])
+						crypto.FieldSubInplace(currentEl, chunkAsEl, crypto.AuctionFieldOrder)
+						workingCopy.Chunks[innerLevel][innerIndex] = ElementToChunk(currentEl)
+
 						workingCopy.Counters[innerLevel][innerIndex]--
 					}
 
@@ -182,16 +207,7 @@ func (v *IBFVector) Recover() [][IBFChunkSize]byte {
 		}
 	}
 
-	return recovered
-}
-
-func XorInplace(data []byte, key []byte) {
-	if len(data) != len(key) {
-		panic("xor of unequal length, refusing to continue")
-	}
-	for i := range data {
-		data[i] ^= key[i]
-	}
+	return recovered, nil
 }
 
 // Bytes serializes the IBF vector to a byte slice.

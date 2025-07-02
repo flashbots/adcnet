@@ -3,10 +3,10 @@ package blind_auction
 import (
 	"bytes"
 	"crypto/rand"
-	"fmt"
 	"testing"
 
 	"github.com/flashbots/adcnet/crypto"
+	"github.com/stretchr/testify/require"
 )
 
 func TestIBFVectorRecovery(t *testing.T) {
@@ -25,7 +25,8 @@ func TestIBFVectorRecovery(t *testing.T) {
 	}
 
 	// Recover chunks from the IBF
-	recovered := ibf.Recover()
+	recovered, err := ibf.Recover()
+	require.NoError(t, err)
 
 	// Verify all chunks were recovered
 	if len(recovered) != len(chunks) {
@@ -49,8 +50,8 @@ func TestIBFVectorRecovery(t *testing.T) {
 
 func TestIBFUnion(t *testing.T) {
 	// Create two new IBFs
-	ibf1 := NewIBFVector(10)
-	ibf2 := NewIBFVector(10)
+	ibf1 := NewIBFVector(14)
+	ibf2 := NewIBFVector(14)
 
 	// Generate random chunks for each IBF
 	chunks1 := make([][IBFChunkSize]byte, 3)
@@ -73,6 +74,7 @@ func TestIBFUnion(t *testing.T) {
 	ibf1els := ibf1.EncodeAsFieldElements()
 	ibf2els := ibf2.EncodeAsFieldElements()
 
+
 	// Combine the IBFs
 	combined := ibf1els
 	for i := range ibf2els {
@@ -80,10 +82,10 @@ func TestIBFUnion(t *testing.T) {
 	}
 
 	// Recover chunks from the combined IBF
-	ibf2 = ibf2.DecodeFromElements(combined)
-	fmt.Println(ibf2.String())
+	combinedIbf := NewIBFVector(14).DecodeFromElements(combined)
 
-	recovered := ibf2.Recover()
+	recovered, err := combinedIbf.Recover()
+	require.NoError(t, err, "%s, %s, %s", ibf1.String(), ibf2.String(), combinedIbf.String())
 
 	// The total number of unique chunks is chunks1 + chunks2
 	allChunks := append(chunks1[:], chunks2[:]...)

@@ -175,7 +175,12 @@ type AuctionResult struct {
 }
 
 func (c *ClientMessager) ProcessPreviousAuction(auctionIBF *blind_auction.IBFVector, previousRoundMessage []byte) AuctionResult {
-	chunks := auctionIBF.Recover()
+	chunks, err := auctionIBF.Recover()
+	if err != nil {
+		// We might want to handle this — on the other hand, the only way to handle is to panic really
+		return AuctionResult{}
+	}
+
 	bids := make([]blind_auction.AuctionData, 0, len(chunks))
 	for _, chunk := range chunks {
 		bids = append(bids, *blind_auction.AuctionDataFromChunk(chunk))
