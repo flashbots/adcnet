@@ -1,115 +1,75 @@
-// Package protocol implements ADCNet: an auction-based anonymous broadcast channel,
-// loosely based on the paper "ZIPNet: Low-bandwidth anonymous broadcast from
-// (dis)Trusted Execution Environments" with extensions for auction-based
-// message scheduling and dynamic message sizing.
+// Package protocol implements ADCNet: an anonymous distributed communication network
+// using threshold cryptography and auction-based message scheduling.
 //
-// # ADCNet Architecture and Workflow
+// # Protocol Overview
 //
-// ADCNet operates through a three-tier architecture:
+// ADCNet provides anonymous broadcast with the following key features:
+//   - Threshold secret sharing for message privacy with liveness
+//   - Auction-based scheduling using Invertible Bloom Filters (IBF)
 //
-//  1. Clients: Run inside Trusted Execution Environments (TEEs) and prepare
-//     encrypted messages. The TEE is used only for DoS prevention, not for
-//     privacy guarantees. Clients participate in an auction-based system to
-//     secure message slots.
+// # Architecture
 //
-//  2. Aggregators: Form a tree-like structure to combine client messages by
-//     XORing them together. This significantly reduces bandwidth requirements for
-//     anytrust servers. Aggregators are completely untrusted for privacy.
+// The protocol operates through three main components:
 //
-//  3. Anytrust Servers: Operate in an "anytrust" model where privacy is guaranteed
-//     as long as at least one server is honest. Servers unblind the aggregated
-//     messages using shared secrets with clients and combine partial decryptions
-//     to produce the final broadcast.
+//  1. Clients: Create polynomial secret shares of their messages and auction bids.
+//     Each share is blinded with one-time pads derived from shared secrets with servers.
 //
-// # Core Protocol Operations (protocols.go)
+//  2. Aggregators: Combine client shares by adding them in the finite field.
+//     This reduces bandwidth requirements for servers.
 //
-// The protocols.go file implements the core message processing operations in ADCNet:
+//  3. Servers: Collaborate to reconstruct messages using threshold decryption.
+//     Each server removes its blinding factors and the leader combines partial decryptions.
 //
-// ## Server Operations
+// # Core Protocol Flow
 //
-// ServerMessager handles server-side operations for unblinding and decryption:
+// 1. Message Preparation (Client):
+//    - Client determines if it won a slot in the previous round's auction
+//    - Encodes message and auction data as field elements
+//    - Creates polynomial shares using Shamir secret sharing (degree t-1 for t threshold)
+//    - Blinds each share with server-specific one-time pads
 //
-//   - UnblindAggregates: Processes aggregated messages from aggregators by applying
-//     server-specific decryption to create a partial decryption message. The server
-//     derives one-time pads from shared secrets with each client and uses them to
-//     partially decrypt the aggregated message.
+// 2. Aggregation:
+//    - Aggregators sum client shares in the finite field
+//    - Multiple aggregation levels can reduce bandwidth hierarchically
 //
-//   - UnblindPartialMessages: Combines partial decryption messages from all anytrust
-//     servers to produce the final broadcast message. This is typically called by the
-//     leader server after collecting shares from all anytrust servers.
+// 3. Partial Decryption (Server):
+//    - Each server removes its blinding factors from the aggregate
+//    - Creates a partial decryption share
 //
-// ## Client Operations
+// 4. Reconstruction (Leader Server):
+//    - Collects partial decryptions from at least t servers
+//    - Uses polynomial interpolation to recover original messages
+//    - Decodes auction IBF to determine next round's winners
 //
-// ClientMessager handles client-side message preparation:
+// # Cryptographic Primitives (also see crypto package)
 //
-//   - PrepareMessage: Creates encrypted client messages with auction data for
-//     scheduling. It determines whether the client should send a message based on
-//     previous round auction results, and prepares the message with proper blinding
-//     using one-time pads derived from shared secrets with servers.
+// Secret Sharing:
+//   - Uses Shamir's polynomial secret sharing
+//   - Message m is shared as f(0) = m where f is a random polynomial
+//   - Server i receives share f(i)
 //
-// ## Aggregation Operations
+// Blinding:
+//   - One-time pads derived from shared secrets: blind = PRF(shared_secret, round, index)
+//   - Separate blinding for auction and message vectors
 //
-//   - AggregateClientMessages: Combines multiple client messages into a single
-//     aggregated message by XORing message vectors and merging IBF vectors.
-//     It verifies client signatures and authorization before aggregation.
+// Field Arithmetic:
+//   - Messages operate in MessageFieldOrder (513-bit prime)
+//   - Auction data operates in AuctionFieldOrder (384-bit)
+//   - All operations are modular arithmetic
 //
-//   - AggregateAggregates: Combines aggregated messages from lower-level aggregators
-//     into a single aggregated message. This is used in the tree-based aggregator
-//     hierarchy to reduce bandwidth requirements.
+// # Auction Mechanism
 //
-// # Auction-Based Scheduling with IBF
+// The auction system uses an Invertible Bloom Filter (IBF) to enable distributed scheduling:
 //
-// The protocol uses an Invertible Bloom Filter (IBF) for message scheduling,
-// which replaces the original footprint scheduling mechanism:
+//  1. Clients encode AuctionData (message hash, weight, size) into IBF chunks
+//  2. IBF vectors are secret-shared alongside message vectors
+//  3. After reconstruction, the IBF is inverted to recover all auction entries
+//  4. Winners are determined by solving knapsack to pack messages with tie-breaks
+//  5. Message placement uses the auction results to determine byte offsets
 //
-//  1. Clients create AuctionData containing a hash of their message and a weight
-//     (priority) value.
+// # Security Properties
+//   - Privacy: Preserved as long as fewer than t servers collude
+//   - Anonymity: Unlinkability between rounds via fresh blinding
+//   - Availability: System operates with any t-of-n servers
 //
-//  2. The AuctionData is encoded into a fixed-size chunk and inserted into an IBF,
-//     which is a probabilistic data structure with multiple levels and buckets.
-//
-//  3. The IBF is encrypted with one-time pads derived from shared secrets with
-//     anytrust servers, ensuring privacy.
-//
-//  4. Servers unblind the IBF vectors by XORing with their portions of the one-time
-//     pads.
-//
-//  5. The leader server combines unblinded shares and recovers all auction entries
-//     from the IBF.
-//
-//  6. Message slots are allocated based on auction weights, with higher-weight
-//     messages receiving priority.
-//
-// # Dynamic Message Sizing
-//
-// Unlike the original fixed-size message slots, ADCNet supports dynamic
-// message sizing through the auction mechanism:
-//
-//   - Clients determine if they won the auction by comparing their weight to other
-//     clients' weights in the previous round.
-//
-// - The message is placed in the appropriate slot if the client won the auction.
-//
-//   - The system effectively implements a knapsack-style optimization for allocating
-//     variable-sized messages into the broadcast vector.
-//
-// # Message Flow
-//
-// 1. Client prepares a message with auction data for the current round
-// 2. Message is sent to a leaf aggregator
-// 3. Aggregators combine messages and forward up the tree
-// 4. Root aggregator sends the combined message to all anytrust servers
-// 5. Each server creates a partial decryption by unblinding with their keys
-// 6. The leader server combines all partial decryptions to get the final output
-// 7. The final output, including recovered auction data, is broadcast to all clients
-// 8. Clients use the auction results to determine if they can send in the next round
-//
-// # Security Considerations
-//
-//   - ZIPNet provides anonymity as long as at least one anytrust server is honest
-//   - TEE security is required only for DoS prevention, not privacy
-//   - The IBF-based auction mechanism ensures fair slot allocation while maintaining anonymity
-//   - Forward secrecy is provided by key ratcheting after each round
-//   - Authentication and authorization checks verify that only legitimate participants
-//     can contribute to the protocol
 package protocol

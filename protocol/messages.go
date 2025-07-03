@@ -1,0 +1,168 @@
+package protocol
+
+import (
+	"encoding/json"
+	"errors"
+	"io"
+	"math/big"
+
+	blind_auction "github.com/flashbots/adcnet/blind-auction"
+	"github.com/flashbots/adcnet/crypto"
+)
+
+// Signed wraps a message with Ed25519 signature for authentication.
+type Signed[T any] struct {
+	PublicKey crypto.PublicKey `json:"public_key"`
+	Signature crypto.Signature `json:"signature"`
+	Object    *T               `json:"object"`
+}
+
+// NewSigned creates an authenticated message by signing the serialized object and public key.
+func NewSigned[T any](privkey crypto.PrivateKey, obj *T) (*Signed[T], error) {
+	pubkey, err := privkey.PublicKey()
+	if err != nil {
+		return nil, err
+	}
+
+	serializedData, err := SerializeMessage(obj)
+	if err != nil {
+		return nil, err
+	}
+
+	signature, err := crypto.Sign(privkey, append(serializedData, pubkey...))
+	if err != nil {
+		return nil, err
+	}
+
+	return &Signed[T]{
+		PublicKey: pubkey,
+		Signature: signature,
+		Object:    obj,
+	}, nil
+}
+
+// UnsafeObject returns the wrapped object without verifying the signature.
+func (s *Signed[T]) UnsafeObject() *T {
+	return s.Object
+}
+
+// Recover verifies the signature and returns the authenticated object with signer's public key.
+func (s *Signed[T]) Recover() (*T, crypto.PublicKey, error) {
+	serializedData, err := SerializeMessage(s.Object)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	ok := s.Signature.Verify(s.PublicKey, append(serializedData, s.PublicKey...))
+	if !ok {
+		return nil, nil, errors.New("signature not valid")
+	}
+
+	return s.Object, s.PublicKey, nil
+}
+
+// ClientRoundMessage contains a client's secret share for one server.
+type ClientRoundMessage struct {
+	RoundNumber   int
+	ServerID      int32
+	AuctionVector []*big.Int
+	MessageVector []*big.Int
+}
+
+// AggregatedClientMessages contains summed shares from multiple clients.
+type AggregatedClientMessages struct {
+	RoundNumber   int
+	ServerID      int32
+	AuctionVector []*big.Int
+	MessageVector []*big.Int
+	UserPKs       []crypto.PublicKey
+}
+
+// UnionInplace adds another aggregate's vectors to this one in-place.
+// Performs field addition for both auction and message vectors.
+func (m *AggregatedClientMessages) UnionInplace(o *AggregatedClientMessages) *AggregatedClientMessages {
+	// Should probably assert they are equal
+	m.RoundNumber = o.RoundNumber
+	if m.AuctionVector == nil {
+		m.AuctionVector = make([]*big.Int, len(o.AuctionVector))
+		for i := range m.AuctionVector {
+			m.AuctionVector[i] = big.NewInt(0)
+		}
+	}
+	if m.MessageVector == nil {
+		m.MessageVector = make([]*big.Int, len(o.MessageVector))
+		for i := range m.MessageVector {
+			m.MessageVector[i] = big.NewInt(0)
+		}
+	}
+	if m.UserPKs == nil {
+		m.UserPKs = []crypto.PublicKey{}
+	}
+
+	for i := range o.AuctionVector {
+		crypto.FieldAddInplace(m.AuctionVector[i], o.AuctionVector[i], crypto.AuctionFieldOrder)
+	}
+	for i := range o.MessageVector {
+		crypto.FieldAddInplace(m.MessageVector[i], o.MessageVector[i], crypto.MessageFieldOrder)
+	}
+
+	m.UserPKs = append(m.UserPKs, o.UserPKs...)
+
+	return m
+}
+
+// ServerPartialDecryptionMessage contains a server's unblinded share for threshold reconstruction.
+type ServerPartialDecryptionMessage struct {
+	ServerID          int32
+	OriginalAggregate *AggregatedClientMessages
+	UserPKs           []crypto.PublicKey
+	AuctionVector     []*big.Int
+	MessageVector     []*big.Int
+}
+
+// ServerRoundData contains the final reconstructed broadcast for a round.
+type ServerRoundData struct {
+	RoundNumber   int
+	AuctionVector *blind_auction.IBFVector
+	MessageVector []byte
+}
+
+// AggregatorRegistrationBlob registers an aggregator with servers during setup.
+type AggregatorRegistrationBlob struct {
+	// PublicKey authenticates aggregated messages
+	PublicKey crypto.PublicKey `json:"public_key"`
+
+	// Level indicates position in aggregation hierarchy (0 = leaf)
+	Level uint32 `json:"level"`
+}
+
+// ServerRegistrationBlob registers a server in the anytrust group during setup.
+type ServerRegistrationBlob struct {
+	// PublicKey authenticates partial decryption shares
+	PublicKey crypto.PublicKey `json:"public_key"`
+
+	// KemPublicKey establishes shared secrets with clients
+	KemPublicKey crypto.PublicKey `json:"kem_public_key"`
+
+	// IsLeader indicates if this server collects shares and produces final output
+	IsLeader bool `json:"is_leader"`
+}
+
+// UnmarshalMessage deserializes a message from JSON.
+func UnmarshalMessage[T any](data []byte) (*T, error) {
+	var msg T
+	err := json.Unmarshal(data, &msg)
+	return &msg, err
+}
+
+// DecodeMessage deserializes a message from a JSON reader.
+func DecodeMessage[T any](reader io.Reader) (*T, error) {
+	var msg T
+	err := json.NewDecoder(reader).Decode(&msg)
+	return &msg, err
+}
+
+// SerializeMessage serializes a message to JSON.
+func SerializeMessage[T any](msg *T) ([]byte, error) {
+	return json.Marshal(msg)
+}

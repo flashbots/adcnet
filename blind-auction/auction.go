@@ -5,20 +5,17 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"sort"
-
-	"github.com/flashbots/adcnet/crypto"
 )
 
-// AuctionData contains bid information for message scheduling.
-// Hash provides message binding but not privacy.
-// Weights are visible after IBF decryption.
+// AuctionData represents a client's bid for message transmission in the next round.
+// The MessageHash binds the bid to a specific message without revealing content.
 type AuctionData struct {
-	MessageHash crypto.Hash
+	MessageHash [32]byte
 	Weight      uint32
 	Size        uint32
 }
 
-// EncodeToChunk encodes auction data into a fixed-size chunk for IBF insertion.
+// EncodeToChunk serializes auction data into a 48-byte chunk for IBF insertion.
 func (a *AuctionData) EncodeToChunk() [IBFChunkSize]byte {
 	var res [IBFChunkSize]byte
 	binary.BigEndian.PutUint32(res[0:4], a.Weight)
@@ -27,7 +24,7 @@ func (a *AuctionData) EncodeToChunk() [IBFChunkSize]byte {
 	return res
 }
 
-// AuctionDataFromChunk decodes auction data from an IBF chunk.
+// AuctionDataFromChunk deserializes auction data from an IBF chunk.
 func AuctionDataFromChunk(chunk [IBFChunkSize]byte) *AuctionData {
 	var res AuctionData
 
@@ -38,28 +35,31 @@ func AuctionDataFromChunk(chunk [IBFChunkSize]byte) *AuctionData {
 	return &res
 }
 
-// AuctionDataFromMessage creates auction data from a message and weight.
+// AuctionDataFromMessage creates auction data binding a message to its bid weight.
+// Used by clients when preparing bids for the next round.
 func AuctionDataFromMessage(msg []byte, weight uint32) *AuctionData {
 	return &AuctionData{
 		MessageHash: sha256.Sum256(msg),
 		Weight:      weight,
+		Size:        uint32(len(msg)), // Size in bytes for bandwidth allocation
 	}
 }
 
-// AuctionWinner represents a winning bid with its allocated slot.
+// AuctionWinner represents a winning bid with its message slot allocation for the next round.
 type AuctionWinner struct {
 	Bid      AuctionData
-	SlotIdx  uint32 // Starting index in message vector
-	SlotSize uint32 // Allocated size (may be equal to bid.Size)
+	SlotIdx  uint32 // Starting byte offset in message vector
+	SlotSize uint32 // Allocated bandwidth in bytes
 }
 
-// AuctionEngine runs the auction to allocate message space using dynamic programming.
+// AuctionEngine determines winning bids after IBF reconstruction.
+// Uses dynamic programming to solve the knapsack problem for optimal bandwidth allocation.
 type AuctionEngine struct {
-	totalBandwidth uint32 // Total bytes available
-	minMessageSize uint32 // Minimum allocation size
+	totalBandwidth uint32
+	minMessageSize uint32
 }
 
-// NewAuctionEngine creates a new auction engine.
+// NewAuctionEngine creates an auction engine with bandwidth and size constraints.
 func NewAuctionEngine(totalBandwidth, minMessageSize uint32) *AuctionEngine {
 	return &AuctionEngine{
 		totalBandwidth: totalBandwidth,
@@ -67,7 +67,8 @@ func NewAuctionEngine(totalBandwidth, minMessageSize uint32) *AuctionEngine {
 	}
 }
 
-// RunAuction executes the auction and returns winners.
+// RunAuction selects winning bids to maximize total weight within bandwidth constraints.
+// Determines message placement for the next communication round.
 func (e *AuctionEngine) RunAuction(bids []AuctionData) []AuctionWinner {
 	if len(bids) == 0 {
 		return nil
@@ -101,13 +102,13 @@ func (e *AuctionEngine) RunAuction(bids []AuctionData) []AuctionWinner {
 	return winners
 }
 
-// knapsackPacking uses dynamic programming to find optimal message packing.
+// knapsackPacking solves the 0-1 knapsack problem to maximize total bid weight.
+// Ensures optimal bandwidth utilization for the next communication round.
 func (e *AuctionEngine) knapsackPacking(bids []AuctionData) []AuctionWinner {
 	n := len(bids)
 	capacity := e.totalBandwidth
 
 	// Create DP table: dp[i][w] = max weight using first i items with capacity w
-	// We'll use a 1D array optimization since we only need the previous row
 	dp := make([]uint32, capacity+1)
 	parent := make([][]int, n+1)
 	for i := range parent {
@@ -159,7 +160,7 @@ func (e *AuctionEngine) knapsackPacking(bids []AuctionData) []AuctionWinner {
 		}
 	}
 
-	// Sort winners by client ID for deterministic ordering
+	// Sort winners by message hash for deterministic slot assignment across all servers
 	sort.Slice(winners, func(i, j int) bool {
 		return bytes.Compare(winners[i].Bid.MessageHash[:], winners[j].Bid.MessageHash[:]) < 0
 	})
@@ -167,12 +168,13 @@ func (e *AuctionEngine) knapsackPacking(bids []AuctionData) []AuctionWinner {
 	return winners
 }
 
-// GreedyAuctionEngine provides a simpler greedy algorithm for comparison.
+// GreedyAuctionEngine provides a simpler greedy algorithm for testing and comparison.
+// Not used in production; the main AuctionEngine provides optimal allocation.
 type GreedyAuctionEngine struct {
 	totalBandwidth uint32
 }
 
-// RunAuction runs a greedy auction (highest weight/size ratio first).
+// RunAuction selects bids greedily by weight/size ratio.
 func (e *GreedyAuctionEngine) RunAuction(bids []AuctionData) []AuctionWinner {
 	// Sort by weight/size ratio (value density)
 	sorted := make([]AuctionData, len(bids))

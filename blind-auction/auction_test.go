@@ -3,7 +3,6 @@ package blind_auction
 import (
 	"testing"
 
-	"github.com/flashbots/adcnet/crypto"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -113,7 +112,7 @@ func TestAuctionEngine_GreedyComparison(t *testing.T) {
 func TestAuctionDataEx_Encoding(t *testing.T) {
 	// Test extended auction data encoding/decoding
 	original := &AuctionData{
-		MessageHash: crypto.Hash{1, 2, 3, 4, 5},
+		MessageHash: [32]byte{1, 2, 3, 4, 5},
 		Weight:      12345,
 		Size:        67890,
 	}
