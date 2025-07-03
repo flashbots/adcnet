@@ -237,32 +237,36 @@ func (c *ClientMessager) PrepareMessage(currentRound int, previousRoundOutput *S
 // SecretShareMessage creates polynomial shares of message and auction data.
 // Uses random polynomials with the secret as the constant term, evaluates at each server ID.
 func (c *ClientMessager) SecretShareMessage(currentRound int, messageElements []*big.Int, auctionElements []*big.Int) ([]*ClientRoundMessage, error) {
-	// TODO: blinding vectors should also consider current round and previous round output here
-	// TODO: separate the vectors better
-	// TODO: handle idxes better
-	// TODO: message size -> message slots (slot size is set by field)
+	// Create sorted list of server IDs for deterministic ordering
+	serverIDs := make([]int32, 0, len(c.SharedSecrets))
+	for sId := range c.SharedSecrets {
+		serverIDs = append(serverIDs, sId)
+	}
+	slices.Sort(serverIDs) // Ensure deterministic order
 
 	auctionVectors := make(map[int32][]*big.Int, len(c.SharedSecrets))
-	for sId, sharedSecret := range c.SharedSecrets {
+	for _, sId := range serverIDs {
+		sharedSecret := c.SharedSecrets[sId]
 		nEls := 2 * blind_auction.IBFVectorSize(c.Config.AuctionSlots)
 		auctionVectors[sId] = crypto.DeriveBlindingVector([]crypto.SharedKey{append([]byte{0}, sharedSecret...)}, uint32(currentRound), int32(nEls), crypto.AuctionFieldOrder)
 	}
 
 	messageVectors := make(map[int32][]*big.Int, len(c.SharedSecrets))
-	for sId, sharedSecret := range c.SharedSecrets {
+	for _, sId := range serverIDs {
+		sharedSecret := c.SharedSecrets[sId]
 		messageVectors[sId] = crypto.DeriveBlindingVector([]crypto.SharedKey{append([]byte{1}, sharedSecret...)}, uint32(currentRound), int32(c.Config.MessageSize), c.Config.MessageFieldOrder)
 	}
 
-	// TODO: shouldwork™
-	serverXs := []*big.Int{}
-	for s := range auctionVectors {
-		if s == 0 {
+	// Use sorted serverIDs to create serverXs
+	serverXs := make([]*big.Int, len(serverIDs))
+	for i, sId := range serverIDs {
+		if sId == 0 {
 			panic("server id must not be 0")
 		}
-		serverXs = append(serverXs, big.NewInt(int64(s)))
+		serverXs[i] = big.NewInt(int64(sId))
 	}
+
 	for i := 0; i < int(c.Config.MessageSize); i++ {
-		// TODO: set t through config
 		mEvals := crypto.RandomPolynomialEvals(int(c.Config.MinServers)-1, serverXs, messageElements[i], c.Config.MessageFieldOrder)
 		for j := 0; j < len(messageVectors); j++ {
 			msgVector := messageVectors[int32(serverXs[j].Int64())]
@@ -270,7 +274,6 @@ func (c *ClientMessager) SecretShareMessage(currentRound int, messageElements []
 		}
 	}
 	for i, auctionEl := range auctionElements {
-		// TODO: set t through config
 		elEvals := crypto.RandomPolynomialEvals(int(c.Config.MinServers)-1, serverXs, auctionEl, crypto.AuctionFieldOrder)
 		for j := 0; j < len(auctionVectors); j++ {
 			auctionVector := auctionVectors[int32(serverXs[j].Int64())]
@@ -278,13 +281,14 @@ func (c *ClientMessager) SecretShareMessage(currentRound int, messageElements []
 		}
 	}
 
+	// Build response in sorted order
 	resp := make([]*ClientRoundMessage, 0, len(c.SharedSecrets))
-	for s := range c.SharedSecrets {
+	for _, sId := range serverIDs {
 		resp = append(resp, &ClientRoundMessage{
-			ServerID:      s,
+			ServerID:      sId,
 			RoundNumber:   currentRound,
-			AuctionVector: auctionVectors[s],
-			MessageVector: messageVectors[s],
+			AuctionVector: auctionVectors[sId],
+			MessageVector: messageVectors[sId],
 		})
 	}
 
