@@ -1,7 +1,9 @@
 package crypto
 
 import (
+	"crypto/aes"
 	"crypto/rand"
+	"crypto/sha3"
 	"encoding/binary"
 	"math/big"
 )
@@ -48,57 +50,41 @@ func NevilleInterpolation(xs []*big.Int, ys []*big.Int, x *big.Int, fieldOrder *
 	return result
 }
 
-// SharedSecretsGenerator computes a PRF-based generator from shared secrets and round number.
-// The generator is used to derive deterministic pseudo-random values.
-func SharedSecretsGenerator(sharedSecrets []SharedKey, round *big.Int, fieldOrder *big.Int) *big.Int {
-	el := new(big.Int)
-	secretElementGenerator := new(big.Int).Set(prfSeed)
-	for _, sse := range sharedSecrets {
-		// Probably insecure
-		el.SetBytes(sse)
-		el.Add(el, round)
-		el.Mul(el, prfSeed)
-		el.Mod(el, fieldOrder)
-		secretElementGenerator.Add(secretElementGenerator, el)
-		secretElementGenerator.Mod(secretElementGenerator, fieldOrder)
-	}
-	return secretElementGenerator
-}
-
-// DeriveBlindingVector generates a vector of blinding factors from shared secrets.
-// The blinding factors are deterministically derived for the given round and can be
-// used to blind and unblind values in the ADCNet protocol.
+// DeriveBlindingVector deterministically generates a vector of blinding elements from shared secrets for the given round.
 func DeriveBlindingVector(sharedSecrets []SharedKey, round uint32, nEls int32, fieldOrder *big.Int) []*big.Int {
-	buf := make([]big.Int, nEls)
+	bytesPerElement := (fieldOrder.BitLen()+7)/8
+	srcBytesBuf := make([]byte, int(nEls)*bytesPerElement)
+	dstBytesBuf := make([]byte, int(nEls)*bytesPerElement)
+	elBuf := make([]big.Int, nEls)
 	res := make([]*big.Int, nEls)
 	for i := range res {
-		res[i] = &buf[i]
+		res[i] = &elBuf[i]
 	}
 
-	bigRound := big.NewInt(int64(round))
+	// Assumes all shared secrets are the same length
+	roundKeyBuf := make([]byte, 4+len(sharedSecrets[0]))
+	binary.BigEndian.PutUint32(roundKeyBuf[:4], uint32(round)) 
 
-	secretElementGenerator := SharedSecretsGenerator(sharedSecrets, bigRound, fieldOrder)
-	// Note: we can chunk and parallelize. Be careful with the generator though.
-	DeriveBlindingVectorInplace(res, secretElementGenerator, bigRound, 0, len(res), fieldOrder)
+	workingEl := big.NewInt(0)
+
+	for _, sharedSecret := range sharedSecrets {
+		copy(roundKeyBuf[4:], sharedSecret)
+		roundSharedKey := sha3.Sum256(roundKeyBuf)
+
+		block, err := aes.NewCipher(roundSharedKey[:])
+		if err != nil {
+			panic(err.Error())
+		}
+
+		block.Encrypt(dstBytesBuf, srcBytesBuf)
+
+		for i := 0; i < int(nEls); i++ {
+			workingEl.SetBytes(dstBytesBuf[i*bytesPerElement:(i+1)*bytesPerElement])
+			FieldAddInplace(res[i], workingEl, fieldOrder)
+		}
+	}
+
 	return res
-}
-
-// DeriveBlindingVectorInplace computes blinding factors in-place for a range of indices.
-// This is used internally by DeriveBlindingVector and can be parallelized by chunking.
-func DeriveBlindingVectorInplace(res []*big.Int, secretElementGenerator *big.Int, round *big.Int, start int, end int, fieldOrder *big.Int) {
-	nonceBuf := make([]byte, 8)
-	binary.BigEndian.PutUint32(nonceBuf, uint32(round.Int64()))
-	nonce := new(big.Int)
-	el := new(big.Int).Exp(secretElementGenerator, big.NewInt(int64(start)), fieldOrder)
-
-	for i := start; i < end; i++ {
-		binary.BigEndian.PutUint32(nonceBuf[4:], uint32(i)) 
-		nonce.SetBytes(nonceBuf)
-		res[i].Mul(res[i], nonce.Mod(nonce, nonce.Mul(nonce, prfSeed)))
-		res[i].Mod(res[i], fieldOrder)
-		el.Mul(el, secretElementGenerator)
-		el.Mod(el, fieldOrder)
-	}
 }
 
 // RandomPolynomialEvals generates a random polynomial of given degree that evaluates

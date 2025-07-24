@@ -244,6 +244,8 @@ func (c *ClientMessager) SecretShareMessage(currentRound int, messageElements []
 	}
 	slices.Sort(serverIDs) // Ensure deterministic order
 
+	// Note: we prepare the blinding vector before secret sharing the messages. The order doesn't matter from cryptographic standpoint, but we avoid a round of allocation and initialization this way.
+
 	auctionVectors := make(map[int32][]*big.Int, len(c.SharedSecrets))
 	for _, sId := range serverIDs {
 		sharedSecret := c.SharedSecrets[sId]
