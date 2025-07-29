@@ -61,10 +61,12 @@ func (s *Signed[T]) Recover() (*T, crypto.PublicKey, error) {
 	return s.Object, s.PublicKey, nil
 }
 
+type ServerID int32
+
 // ClientRoundMessage contains a client's secret share for one server.
 type ClientRoundMessage struct {
 	RoundNumber   int
-	ServerID      int32
+	ServerID      ServerID
 	AuctionVector []*big.Int
 	MessageVector []*big.Int
 }
@@ -72,7 +74,7 @@ type ClientRoundMessage struct {
 // AggregatedClientMessages contains summed shares from multiple clients.
 type AggregatedClientMessages struct {
 	RoundNumber   int
-	ServerID      int32
+	ServerID      ServerID
 	AuctionVector []*big.Int
 	MessageVector []*big.Int
 	UserPKs       []crypto.PublicKey
@@ -113,15 +115,15 @@ func (m *AggregatedClientMessages) UnionInplace(o *AggregatedClientMessages) *Ag
 
 // ServerPartialDecryptionMessage contains a server's unblinded share for threshold reconstruction.
 type ServerPartialDecryptionMessage struct {
-	ServerID          int32
+	ServerID          ServerID
 	OriginalAggregate *AggregatedClientMessages
 	UserPKs           []crypto.PublicKey
 	AuctionVector     []*big.Int
 	MessageVector     []*big.Int
 }
 
-// ServerRoundData contains the final reconstructed broadcast for a round.
-type ServerRoundData struct {
+// RoundBroadcast contains the final reconstructed broadcast for a round.
+type RoundBroadcast struct {
 	RoundNumber   int
 	AuctionVector *blind_auction.IBFVector
 	MessageVector []byte

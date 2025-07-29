@@ -23,23 +23,23 @@
 // # Core Protocol Flow
 //
 // 1. Message Preparation (Client):
-//    - Client determines if it won a slot in the previous round's auction
-//    - Encodes message and auction data as field elements
-//    - Creates polynomial shares using Shamir secret sharing (degree t-1 for t threshold)
-//    - Blinds each share with server-specific one-time pads
+//   - Client determines if it won a slot in the previous round's auction
+//   - Encodes message and auction data as field elements
+//   - Creates polynomial shares using Shamir secret sharing (degree t-1 for t threshold)
+//   - Blinds each share with server-specific one-time pads
 //
 // 2. Aggregation:
-//    - Aggregators sum client shares in the finite field
-//    - Multiple aggregation levels can reduce bandwidth hierarchically
+//   - Aggregators sum client shares in the finite field
+//   - Multiple aggregation levels can reduce bandwidth hierarchically
 //
 // 3. Partial Decryption (Server):
-//    - Each server removes its blinding factors from the aggregate
-//    - Creates a partial decryption share
+//   - Each server removes its blinding factors from the aggregate
+//   - Creates a partial decryption share
 //
 // 4. Reconstruction (Leader Server):
-//    - Collects partial decryptions from at least t servers
-//    - Uses polynomial interpolation to recover original messages
-//    - Decodes auction IBF to determine next round's winners
+//   - Collects partial decryptions from at least t servers
+//   - Uses polynomial interpolation to recover original messages
+//   - Decodes auction IBF to determine next round's winners
 //
 // # Cryptographic Primitives (also see crypto package)
 //
@@ -71,5 +71,4 @@
 //   - Privacy: Preserved as long as fewer than t servers collude
 //   - Anonymity: Unlinkability between rounds via fresh blinding
 //   - Availability: System operates with any t-of-n servers
-//
 package protocol

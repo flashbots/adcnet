@@ -39,7 +39,7 @@ func NevilleInterpolation(xs []*big.Int, ys []*big.Int, x *big.Int, fieldOrder *
 			ps[i].Denom().Mul(ps[i].Denom(), dm.Sub(xs[i], xs[i+k]))
 		}
 	}
-	
+
 	// Convert rational result to field element: (num * denom^-1) mod fieldOrder
 	result := new(big.Int).Set(ps[0].Num())
 	denomInv := new(big.Int).ModInverse(ps[0].Denom(), fieldOrder)
@@ -52,7 +52,7 @@ func NevilleInterpolation(xs []*big.Int, ys []*big.Int, x *big.Int, fieldOrder *
 
 // DeriveBlindingVector deterministically generates a vector of blinding elements from shared secrets for the given round.
 func DeriveBlindingVector(sharedSecrets []SharedKey, round uint32, nEls int32, fieldOrder *big.Int) []*big.Int {
-	bytesPerElement := (fieldOrder.BitLen()+7)/8
+	bytesPerElement := (fieldOrder.BitLen() + 7) / 8
 	srcBytesBuf := make([]byte, int(nEls)*bytesPerElement)
 	dstBytesBuf := make([]byte, int(nEls)*bytesPerElement)
 	elBuf := make([]big.Int, nEls)
@@ -63,7 +63,7 @@ func DeriveBlindingVector(sharedSecrets []SharedKey, round uint32, nEls int32, f
 
 	// Assumes all shared secrets are the same length
 	roundKeyBuf := make([]byte, 4+len(sharedSecrets[0]))
-	binary.BigEndian.PutUint32(roundKeyBuf[:4], uint32(round)) 
+	binary.BigEndian.PutUint32(roundKeyBuf[:4], uint32(round))
 
 	workingEl := big.NewInt(0)
 
@@ -71,7 +71,8 @@ func DeriveBlindingVector(sharedSecrets []SharedKey, round uint32, nEls int32, f
 		copy(roundKeyBuf[4:], sharedSecret)
 		roundSharedKey := sha3.Sum256(roundKeyBuf)
 
-		block, err := aes.NewCipher(roundSharedKey[:])
+		// 128 bit AES
+		block, err := aes.NewCipher(roundSharedKey[:16])
 		if err != nil {
 			panic(err.Error())
 		}
@@ -79,7 +80,7 @@ func DeriveBlindingVector(sharedSecrets []SharedKey, round uint32, nEls int32, f
 		block.Encrypt(dstBytesBuf, srcBytesBuf)
 
 		for i := 0; i < int(nEls); i++ {
-			workingEl.SetBytes(dstBytesBuf[i*bytesPerElement:(i+1)*bytesPerElement])
+			workingEl.SetBytes(dstBytesBuf[i*bytesPerElement : (i+1)*bytesPerElement])
 			FieldAddInplace(res[i], workingEl, fieldOrder)
 		}
 	}

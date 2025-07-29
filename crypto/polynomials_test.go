@@ -1,8 +1,8 @@
 package crypto
 
 import (
-	"math/big"
 	"crypto/rand"
+	"math/big"
 	unsafe_rand "math/rand"
 	"testing"
 
@@ -145,5 +145,3 @@ func TestServerStreams(t *testing.T) {
 
 	require.Zero(t, NevilleInterpolation(bigOneTwoThree[:2], []*big.Int{s0Vector[0], s1Vector[0]}, big.NewInt(0), MessageFieldOrder).Cmp(m0))
 }
-
-

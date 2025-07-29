@@ -74,7 +74,6 @@ func TestIBFUnion(t *testing.T) {
 	ibf1els := ibf1.EncodeAsFieldElements()
 	ibf2els := ibf2.EncodeAsFieldElements()
 
-
 	// Combine the IBFs
 	combined := ibf1els
 	for i := range ibf2els {

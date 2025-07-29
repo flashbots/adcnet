@@ -13,7 +13,7 @@ type Client interface {
 	// PrepareMessage creates secret-shared messages for the current round.
 	// Returns one message per server containing the client's share.
 	PrepareMessage(ctx context.Context, round int,
-		previousRoundOutput *ServerRoundData,
+		previousRoundOutput *RoundBroadcast,
 		message []byte,
 		auctionData *blind_auction.AuctionData) ([]*ClientRoundMessage, bool, error)
 }
@@ -41,7 +41,7 @@ type Server interface {
 
 	// UnblindPartialMessages combines partial decryptions from threshold servers
 	// to produce the final broadcast containing messages and auction results.
-	UnblindPartialMessages(msgs []*ServerPartialDecryptionMessage) (*ServerRoundData, error)
+	UnblindPartialMessages(msgs []*ServerPartialDecryptionMessage) (*RoundBroadcast, error)
 }
 
 // ADCNetConfig provides configuration parameters for ADCNet components.
@@ -66,6 +66,10 @@ type ADCNetConfig struct {
 
 	// RoundsPerWindow defines rounds per participation window for rate limiting.
 	RoundsPerWindow uint32
+}
+
+func AuctionSlotsForConfig(c *ADCNetConfig) uint32 {
+	return 2 * blind_auction.IBFVectorSize(c.AuctionSlots)
 }
 
 // AuctionResult indicates whether a client won an auction slot.

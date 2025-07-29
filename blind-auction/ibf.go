@@ -80,9 +80,9 @@ func ChunkToElement(data [IBFChunkSize]byte) *big.Int {
 
 // ElementToChunk converts a field element back to a chunk, preserving leading zeros.
 func ElementToChunk(el *big.Int) [IBFChunkSize]byte {
-    var data [IBFChunkSize]byte
-    el.FillBytes(data[:])
-    return data
+	var data [IBFChunkSize]byte
+	el.FillBytes(data[:])
+	return data
 }
 
 // InsertChunk adds a chunk to the IBF using field addition in AuctionFieldOrder.
@@ -218,19 +218,19 @@ func (v *IBFVector) Recover() ([][IBFChunkSize]byte, error) {
 
 // Bytes serializes the IBF to a byte slice.
 func (v *IBFVector) Bytes() []byte {
-       res := binary.BigEndian.AppendUint32([]byte{}, uint32(len(v.Chunks)))
-       res = binary.BigEndian.AppendUint32(res, uint32(len(v.Chunks[0])))
-       for level := range v.Chunks {
-               for chunk := range v.Chunks[level] {
-                       res = append(res, v.Chunks[level][chunk][:]...)
-               }
-       }
+	res := binary.BigEndian.AppendUint32([]byte{}, uint32(len(v.Chunks)))
+	res = binary.BigEndian.AppendUint32(res, uint32(len(v.Chunks[0])))
+	for level := range v.Chunks {
+		for chunk := range v.Chunks[level] {
+			res = append(res, v.Chunks[level][chunk][:]...)
+		}
+	}
 
-       for level := range v.Counters {
-               for i := range v.Counters[level] {
-                       res = binary.BigEndian.AppendUint64(res, v.Counters[level][i])
-               }
-       }
+	for level := range v.Counters {
+		for i := range v.Counters[level] {
+			res = binary.BigEndian.AppendUint64(res, v.Counters[level][i])
+		}
+	}
 
-       return res
+	return res
 }

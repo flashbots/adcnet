@@ -26,12 +26,12 @@ func FieldAddInplace(l *big.Int, r *big.Int, fieldOrder *big.Int) *big.Int {
 	l.Add(l, r)
 	l.Mod(l, fieldOrder)
 	/*
-	for l.Cmp(fieldOrder) > 1 {
-		l = l.Sub(l, fieldOrder)
-	}
-	for l.Sign() < 0 {
-		l = l.Add(l, fieldOrder)
-	}
+		for l.Cmp(fieldOrder) > 1 {
+			l = l.Sub(l, fieldOrder)
+		}
+		for l.Sign() < 0 {
+			l = l.Add(l, fieldOrder)
+		}
 	*/
 	return l
 }
@@ -43,11 +43,11 @@ func FieldSubInplace(l *big.Int, r *big.Int, fieldOrder *big.Int) *big.Int {
 	l.Sub(l, r)
 	l.Mod(l, fieldOrder)
 	/*
-	for l.Sign() < 0 {
-		l.Add(l, fieldOrder)
-	}
-	for l.Cmp(fieldOrder) > 1 {
-		l.Sub(l, fieldOrder)
-	}*/
+		for l.Sign() < 0 {
+			l.Add(l, fieldOrder)
+		}
+		for l.Cmp(fieldOrder) > 1 {
+			l.Sub(l, fieldOrder)
+		}*/
 	return l
 }

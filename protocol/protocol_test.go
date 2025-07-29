@@ -25,13 +25,13 @@ func TestSecretSharingClient(t *testing.T) {
 	config := &ADCNetConfig{
 		AuctionSlots:      10,
 		MessageSize:       3,
-		MinServers: 2,
+		MinServers:        2,
 		MessageFieldOrder: crypto.MessageFieldOrder,
 	}
 
 	c := &ClientMessager{
 		Config:        config,
-		SharedSecrets: map[int32]crypto.SharedKey{1: sharedSecret("c1s1"), 2: sharedSecret("c1s2"), 3: sharedSecret("c1s3")},
+		SharedSecrets: map[ServerID]crypto.SharedKey{1: sharedSecret("c1s1"), 2: sharedSecret("c1s2"), 3: sharedSecret("c1s3")},
 	}
 
 	auctionIBF := blind_auction.NewIBFVector(config.AuctionSlots)
@@ -72,7 +72,7 @@ func TestE2E(t *testing.T) {
 		AuctionSlots:      10,
 		MessageSize:       3,
 		MessageFieldOrder: crypto.MessageFieldOrder,
-		MinServers: 2,
+		MinServers:        2,
 	}
 
 	// client1PK, client1SK, _ := crypto.GenerateKeyPair()
@@ -82,7 +82,7 @@ func TestE2E(t *testing.T) {
 	for s := range servers {
 		servers[s] = &ServerMessager{
 			Config:        config,
-			ServerID:      int32(s + 1),
+			ServerID:      ServerID(s + 1),
 			SharedSecrets: make(map[string]crypto.SharedKey),
 		}
 	}
@@ -93,7 +93,7 @@ func TestE2E(t *testing.T) {
 	for c := range clients {
 		clients[c] = &ClientMessager{
 			Config:        config,
-			SharedSecrets: make(map[int32]crypto.SharedKey),
+			SharedSecrets: make(map[ServerID]crypto.SharedKey),
 		}
 		var pubkey crypto.PublicKey
 		pubkey, clientKeys[c], _ = crypto.GenerateKeyPair()
@@ -106,7 +106,7 @@ func TestE2E(t *testing.T) {
 		}
 	}
 
-	previousRoundOutput := &ServerRoundData{
+	previousRoundOutput := &RoundBroadcast{
 		RoundNumber:   1,
 		AuctionVector: blind_auction.NewIBFVector(config.AuctionSlots),
 		MessageVector: []byte{},
@@ -145,10 +145,10 @@ func TestE2E(t *testing.T) {
 	require.Len(t, talkingClients, 2)
 
 	agg := &AggregatorMessager{Config: config}
-	aggregatedMessages, err := agg.AggregateClientMessages(2, clientMsgs, clientPubkeys)
+	aggregatedMessages, err := agg.AggregateClientMessages(2, nil, clientMsgs, clientPubkeys)
 	require.NoError(t, err)
 	require.Len(t, aggregatedMessages, 3) // one message per server
-	aggregatedMessagesPerServer := make(map[int32]*AggregatedClientMessages, 3)
+	aggregatedMessagesPerServer := make(map[ServerID]*AggregatedClientMessages, 3)
 	for _, msg := range aggregatedMessages {
 		aggregatedMessagesPerServer[msg.ServerID] = msg
 	}
@@ -221,7 +221,7 @@ func BenchmarkUnblindAggregate(b *testing.B) {
 							AuctionSlots:      10,
 							MessageSize:       uint32(msgVectorSlots),
 							MessageFieldOrder: fieldOrder,
-							MinServers: 2,
+							MinServers:        2,
 						},
 						ServerID:      1,
 						SharedSecrets: sharedSecrets,
@@ -272,22 +272,22 @@ func BenchmarkUnblindMessages(b *testing.B) {
 		userPKs[i] = pubkey
 	}
 
-			for _, msgVectorSlots := range msgSizeBenches {
-	for _, nServers := range nServerBenches {
-		for _, nClients := range nClientBenches {
+	for _, msgVectorSlots := range msgSizeBenches {
+		for _, nServers := range nServerBenches {
+			for _, nClients := range nClientBenches {
 				b.Run(fmt.Sprintf("Unblind partial messages servers-%d-clients-%d-msg-%d-field-%d", nServers, nClients, msgVectorSlots, fieldOrder.BitLen()), func(b *testing.B) {
 
 					config := &ADCNetConfig{
 						AuctionSlots:      10,
 						MessageSize:       uint32(msgVectorSlots),
 						MessageFieldOrder: fieldOrder,
-						MinServers: uint32(nServers),
+						MinServers:        uint32(nServers),
 					}
 
 					pdm := make([]*ServerPartialDecryptionMessage, nServers)
 					for i := range pdm {
 						pdm[i] = &ServerPartialDecryptionMessage{
-							ServerID:          int32(i + 1),
+							ServerID:          ServerID(i + 1),
 							OriginalAggregate: &AggregatedClientMessages{RoundNumber: 1},
 							UserPKs:           userPKs[:nClients],
 							AuctionVector:     []*big.Int{},
