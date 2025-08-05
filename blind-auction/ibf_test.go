@@ -14,7 +14,7 @@ func TestIBFVectorRecovery(t *testing.T) {
 	ibf := NewIBFVector(100)
 
 	// Generate a few random chunks to insert
-	chunks := make([][IBFChunkSize]byte, 5)
+	chunks := make([][IBFChunkSize]byte, 20)
 	for i := range chunks {
 		rand.Read(chunks[i][:])
 	}
@@ -26,7 +26,7 @@ func TestIBFVectorRecovery(t *testing.T) {
 
 	// Recover chunks from the IBF
 	recovered, err := ibf.Recover()
-	require.NoError(t, err)
+	require.NoError(t, err, ibf)
 
 	// Verify all chunks were recovered
 	if len(recovered) != len(chunks) {

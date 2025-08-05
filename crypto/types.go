@@ -3,9 +3,12 @@ package crypto
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"math/big"
 	"slices"
 )
 
@@ -48,6 +51,40 @@ func (pk PublicKey) Equal(other PublicKey) bool {
 // This is useful for logging, displaying to users, and using as a map key.
 func (pk PublicKey) String() string {
 	return hex.EncodeToString(pk)
+}
+
+type ServerID uint32
+
+func PublicKeyToServerID(pubKey PublicKey) ServerID {
+	hash := sha256.Sum256(pubKey.Bytes())
+	id := binary.BigEndian.Uint32(hash[:4])
+	// Ensure non-zero (ServerID 0 is reserved)
+	if id == 0 {
+		id = 1
+	}
+	return ServerID(id)
+}
+
+func ServerIDsToXEvals(roundSIds []ServerID, availableSIds []ServerID) []*big.Int {
+	res := make([]*big.Int, len(availableSIds))
+	for i := range res {
+		res[i] = new(big.Int)
+	}
+
+	// Ideally 1..len(sIds) smallest to largest (preserves order)
+	// But that requires knowing which servers are participating (doable)
+	orderedSids := roundSIds
+	slices.Sort(orderedSids)
+	for j, id1 := range orderedSids {
+		for k, id2 := range availableSIds {
+			if id1 == id2 {
+				res[k].SetUint64(uint64(j + 1))
+				break
+			}
+		}
+	}
+
+	return res
 }
 
 // PrivateKey represents a private key used for signing and key exchange.

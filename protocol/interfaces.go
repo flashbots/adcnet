@@ -49,8 +49,8 @@ type ADCNetConfig struct {
 	// AuctionSlots is the number of slots in the IBF for auction data.
 	AuctionSlots uint32
 
-	// MessageSize is the number of field elements in the message vector.
-	MessageSize uint32
+	// MessageSlots is the number of field elements in the message vector.
+	MessageSlots int
 
 	// MessageFieldOrder is the prime modulus for message field arithmetic.
 	MessageFieldOrder *big.Int

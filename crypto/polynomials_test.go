@@ -29,32 +29,47 @@ func TestInterpolation(t *testing.T) {
 		big.NewInt(897),
 	}
 
-	res := NevilleInterpolation(xs, ys, big.NewInt(-2), MessageFieldOrder)
-	require.Equal(t, int64(2819712005523334122), res.Int64())
+	coeffs := LagrangeCoeffs(xs, MessageFieldOrder)
+	lres := LagrangeInterpolation(xs, ys, coeffs, MessageFieldOrder)
+	require.Equal(t, int64(7), lres.Int64())
 }
 
-func TestBigInterpolation(t *testing.T) {
-	xs := make([]*big.Int, 4)
-	ys := make([]*big.Int, 4)
+func TestPolynomials(t *testing.T) {
+	xs := make([]*big.Int, 10)
 	for i := range xs {
-		xs[i] = big.NewInt(int64(i))
-		ys[i] = big.NewInt(0)
+		xs[i] = big.NewInt(int64(i + 1))
 	}
 
-	// random point
-	ys[0].SetString("3400971016232485726551449299057556896915868662226607376649412587336645327403735602289735985867921794946846307425314353924927376609169908691446758184083445", 10)
+	deg := 5
+	coeffs := LagrangeCoeffs(xs[9-deg:10], MessageFieldOrder)
 
-	res := NevilleInterpolation(xs, ys, big.NewInt(10), MessageFieldOrder)
-	require.Equal(t, int64(7564501717226133287), res.Int64())
+	for i := 0; i < 10; i++ {
+		el, _ := rand.Int(rand.Reader, MessageFieldOrder)
+		evals := RandomPolynomialEvals(deg, xs, el, MessageFieldOrder)
+		for _, eval := range evals {
+			require.True(t, eval.Sign() > 0, el.String())
+			require.True(t, eval.Cmp(MessageFieldOrder) <= 0, el.String())
+		}
+
+		zero := big.NewInt(0)
+		intpRes := LagrangeInterpolation(xs[9-deg:10], evals[9-deg:10], coeffs, MessageFieldOrder)
+
+		require.Zero(t, intpRes.Cmp(el), "%s: %s\t(%v): (%v)", el.String(), intpRes.String(), xs[9-deg:10], evals[9-deg:10])
+
+		for j := 0; j < 100; j++ {
+			evals2 := RandomPolynomialEvals(deg, xs, zero, MessageFieldOrder)
+			for k := range evals {
+				evals[k].Add(evals[k], evals2[k])
+				evals[k].Mod(evals[k], MessageFieldOrder)
+			}
+			intpRes2 := LagrangeInterpolation(xs[9-deg:10], evals[9-deg:10], coeffs, MessageFieldOrder)
+			require.Zero(t, intpRes2.Cmp(el), "%s: %s", el.String(), intpRes.String())
+		}
+	}
 }
 
 type Client struct {
 	Shares map[string]*big.Int
-}
-
-func TestRandomPolynomial(t *testing.T) {
-	ys := RandomPolynomialEvals(1, []*big.Int{big.NewInt(1), big.NewInt(2)}, big.NewInt(10), MessageFieldOrder)
-	require.Zero(t, big.NewInt(10).Cmp(NevilleInterpolation([]*big.Int{big.NewInt(1), big.NewInt(2)}, ys, big.NewInt(0), MessageFieldOrder)))
 }
 
 func TestServerStreams(t *testing.T) {
@@ -88,7 +103,7 @@ func TestServerStreams(t *testing.T) {
 	m0 := big.NewInt(0).Rand(rs, MessageFieldOrder)
 	m0evals := RandomPolynomialEvals(1, bigOneTwoThree, m0, MessageFieldOrder)
 
-	require.Zero(t, m0.Cmp(NevilleInterpolation(bigOneTwoThree[:2], m0evals[:2], big.NewInt(0), MessageFieldOrder)))
+	require.Zero(t, m0.Cmp(LagrangeInterpolation(bigOneTwoThree[:2], m0evals[:2], nil, MessageFieldOrder)))
 
 	m1 := big.NewInt(0).Rand(rs, MessageFieldOrder)
 	m1evals := RandomPolynomialEvals(1, bigOneTwoThree, m1, MessageFieldOrder)
@@ -143,5 +158,6 @@ func TestServerStreams(t *testing.T) {
 		FieldSubInplace(s1Vector[i], s1UnblindingVector[i], MessageFieldOrder)
 	}
 
-	require.Zero(t, NevilleInterpolation(bigOneTwoThree[:2], []*big.Int{s0Vector[0], s1Vector[0]}, big.NewInt(0), MessageFieldOrder).Cmp(m0))
+	interpolatedValue := LagrangeInterpolation(bigOneTwoThree[:2], []*big.Int{s0Vector[0], s1Vector[0]}, nil, MessageFieldOrder)
+	require.Zero(t, interpolatedValue.Cmp(m0), interpolatedValue.String())
 }

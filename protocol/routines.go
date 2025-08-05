@@ -39,39 +39,48 @@ func ServerSetup(config *ADCNetConfig, clientPubkeys map[string]*ecdh.PublicKey,
 // UnblindPartialMessages reconstructs the final broadcast by combining partial decryptions.
 // Uses polynomial interpolation at x=0 to recover the original messages and auction data.
 func (s *ServerMessager) UnblindPartialMessages(msgs []*ServerPartialDecryptionMessage) (*RoundBroadcast, error) {
-	leaderUnblindIdx := slices.IndexFunc(msgs, func(msg *ServerPartialDecryptionMessage) bool { return msg.ServerID == s.ServerID })
-	leaderUnblind := msgs[leaderUnblindIdx]
+	slices.SortFunc(msgs, func(l, r *ServerPartialDecryptionMessage) int {
+		return int(l.ServerID) - int(r.ServerID)
+	})
 
-	xs := []*big.Int{}
-	for i := 0; i < int(s.Config.MinServers); i++ {
-		xs = append(xs, big.NewInt(int64(msgs[i].ServerID)))
+	auctionVector := make([]*big.Int, len(msgs[0].AuctionVector))
+	msgsVector := make([]*big.Int, len(msgs[0].MessageVector))
+
+	sIds := make([]ServerID, s.Config.MinServers)
+	for i := range sIds {
+		sIds[i] = msgs[i].ServerID
 	}
+
+	allServerIdsForRound := msgs[0].OriginalAggregate.AllServerIds
+	for _, msg := range msgs {
+		if !slices.Equal(allServerIdsForRound, msg.OriginalAggregate.AllServerIds) {
+			return nil, fmt.Errorf("mismatching round server ids in decryption messages")
+		}
+	}
+
+	xs := crypto.ServerIDsToXEvals(allServerIdsForRound, sIds)
+	auctionCoeffs := crypto.LagrangeCoeffs(xs, crypto.AuctionFieldOrder)
+	messageCoeffs := crypto.LagrangeCoeffs(xs, s.Config.MessageFieldOrder)
 	evals := make([]*big.Int, int(s.Config.MinServers))
-	for chunk := range leaderUnblind.AuctionVector {
+	for chunk := range auctionVector {
 		for i := 0; i < int(s.Config.MinServers); i++ {
 			evals[i] = msgs[i].AuctionVector[chunk]
 		}
-		leaderUnblind.AuctionVector[chunk] = crypto.NevilleInterpolation(xs, evals, big.NewInt(0), crypto.AuctionFieldOrder)
+		auctionVector[chunk] = crypto.LagrangeInterpolation(xs, evals, auctionCoeffs, crypto.AuctionFieldOrder)
 	}
-	for chunk := range leaderUnblind.MessageVector {
+
+	for chunk := range msgsVector {
 		for i := 0; i < int(s.Config.MinServers); i++ {
 			evals[i] = msgs[i].MessageVector[chunk]
 		}
-		leaderUnblind.MessageVector[chunk] = crypto.NevilleInterpolation(xs, evals, big.NewInt(0), s.Config.MessageFieldOrder)
+		msgsVector[chunk] = crypto.LagrangeInterpolation(xs, evals, messageCoeffs, s.Config.MessageFieldOrder)
 	}
 
 	nBytesInFieldElement := (s.Config.MessageFieldOrder.BitLen() - 1) / 8
-	msgBytes := make([]byte, int(s.Config.MessageSize)*nBytesInFieldElement)
-	for i, el := range leaderUnblind.MessageVector {
-		el.Mod(el, s.Config.MessageFieldOrder)
-		copy(msgBytes[i*nBytesInFieldElement:(i+1)*nBytesInFieldElement], el.Bytes())
-		// el.FillBytes(msgBytes[i*nBytesInFieldElement:(i+1)*nBytesInFieldElement])
-	}
-
 	unblindedMessage := RoundBroadcast{
-		RoundNumber:   leaderUnblind.OriginalAggregate.RoundNumber,
-		AuctionVector: new(blind_auction.IBFVector).DecodeFromElements(leaderUnblind.AuctionVector),
-		MessageVector: msgBytes,
+		RoundNumber:   msgs[0].OriginalAggregate.RoundNumber,
+		AuctionVector: blind_auction.NewIBFVector(s.Config.AuctionSlots).DecodeFromElements(auctionVector),
+		MessageVector: DecodeMessageFromFieldElements(msgsVector, nBytesInFieldElement),
 	}
 
 	return &unblindedMessage, nil
@@ -79,7 +88,7 @@ func (s *ServerMessager) UnblindPartialMessages(msgs []*ServerPartialDecryptionM
 
 // UnblindAggregate creates a partial decryption by removing this server's blinding factors.
 // Derives one-time pads from shared secrets with each client and subtracts them from the aggregate.
-func (s *ServerMessager) UnblindAggregate(currentRound int, aggregate *AggregatedClientMessages, previousRoundAuction *blind_auction.IBFVector) (*ServerPartialDecryptionMessage, error) {
+func (s *ServerMessager) UnblindAggregate(currentRound int, aggregate *AggregatedClientMessages) (*ServerPartialDecryptionMessage, error) {
 	// TODO: consider recovering and checking user signatures rather than aggregator ones
 	// TODO: aggregate user signatures (BLS or equivalent)
 
@@ -102,16 +111,32 @@ func (s *ServerMessager) UnblindAggregate(currentRound int, aggregate *Aggregate
 		msgSharedSecrets[i] = append([]byte{1}, sharedKey...)
 	}
 
-	messageBlindingVector := crypto.DeriveBlindingVector(msgSharedSecrets, uint32(currentRound), int32(s.Config.MessageSize), s.Config.MessageFieldOrder)
-	nEls := 2 * blind_auction.IBFVectorSize(s.Config.AuctionSlots)
-	auctionBlindingVector := crypto.DeriveBlindingVector(auctionSharedSecrets, uint32(currentRound), int32(nEls), crypto.AuctionFieldOrder)
+	// Parallelization setup is somewhat finicky. Optimize for specific workload.
+	nRoutines := min(10, len(msgSharedSecrets) /* for tests */)
+	batchSize := (len(msgSharedSecrets) + nRoutines - 1) / nRoutines
 
-	for i := range aggregate.MessageVector {
-		crypto.FieldSubInplace(aggregate.MessageVector[i], messageBlindingVector[i], s.Config.MessageFieldOrder)
+	mbvc := make(chan []*big.Int, nRoutines)
+	abvc := make(chan []*big.Int, nRoutines)
+	nAuctionEls := len(aggregate.AuctionVector)
+	for i := 0; i < nRoutines; i++ {
+		go func(i int) {
+			mbvc <- crypto.DeriveBlindingVector(msgSharedSecrets[i*batchSize:min(i*batchSize+batchSize, len(msgSharedSecrets))], uint32(currentRound), int32(s.Config.MessageSlots), s.Config.MessageFieldOrder)
+			abvc <- crypto.DeriveBlindingVector(auctionSharedSecrets[i*batchSize:min(i*batchSize+batchSize, len(auctionSharedSecrets))], uint32(currentRound), int32(nAuctionEls), crypto.AuctionFieldOrder)
+		}(i)
 	}
 
-	for i := range aggregate.AuctionVector {
-		crypto.FieldSubInplace(aggregate.AuctionVector[i], auctionBlindingVector[i], crypto.AuctionFieldOrder)
+	for i := 0; i < nRoutines; i++ {
+		messageBlindingVector := <-mbvc
+		for j, el := range messageBlindingVector {
+			crypto.FieldSubInplace(aggregate.MessageVector[j], el, s.Config.MessageFieldOrder)
+		}
+	}
+
+	for i := 0; i < nRoutines; i++ {
+		auctionBlindingVector := <-abvc
+		for j, el := range auctionBlindingVector {
+			crypto.FieldSubInplace(aggregate.AuctionVector[j], el, crypto.AuctionFieldOrder)
+		}
 	}
 
 	return &ServerPartialDecryptionMessage{
@@ -153,19 +178,24 @@ func (a *AggregatorMessager) AggregateClientMessages(round int, previousAggregat
 
 		if _, ok := aggregatedMsgs[rawMsg.ServerID]; !ok {
 			aggregatedMsgs[rawMsg.ServerID] = &AggregatedClientMessages{
-				RoundNumber: round,
-				ServerID:    rawMsg.ServerID,
+				RoundNumber:  round,
+				ServerID:     rawMsg.ServerID,
+				AllServerIds: rawMsg.AllServerIds,
 			}
 		}
 
 		// TODO: aggregate user signatures (BLS or equivalent)
-		aggregatedMsgs[rawMsg.ServerID].UnionInplace(&AggregatedClientMessages{
+		_, err = aggregatedMsgs[rawMsg.ServerID].UnionInplace(&AggregatedClientMessages{
 			RoundNumber:   rawMsg.RoundNumber,
 			ServerID:      rawMsg.ServerID,
+			AllServerIds:  rawMsg.AllServerIds,
 			AuctionVector: rawMsg.AuctionVector,
 			MessageVector: rawMsg.MessageVector,
 			UserPKs:       []crypto.PublicKey{signer},
-		})
+		}, a.Config.MessageFieldOrder)
+		if err != nil {
+			return nil, fmt.Errorf("could not union client messages: %w", err)
+		}
 	}
 
 	res := []*AggregatedClientMessages{}
@@ -187,12 +217,16 @@ func (a *AggregatorMessager) AggregateAggregates(round int, msgs []*AggregatedCl
 		currentAggregate, found := aggregatedMsgs[msg.ServerID]
 		if !found {
 			currentAggregate = &AggregatedClientMessages{
-				RoundNumber: round,
-				ServerID:    msg.ServerID,
+				RoundNumber:  round,
+				ServerID:     msg.ServerID,
+				AllServerIds: msg.AllServerIds,
 			}
 			aggregatedMsgs[msg.ServerID] = currentAggregate
 		}
-		currentAggregate.UnionInplace(msg)
+		_, err := currentAggregate.UnionInplace(msg, a.Config.MessageFieldOrder)
+		if err != nil {
+			return nil, fmt.Errorf("could not union aggregates: %w", err)
+		}
 	}
 
 	res := make([]*AggregatedClientMessages, 0, len(aggregatedMsgs))
@@ -229,7 +263,6 @@ func ClientSetup(config *ADCNetConfig, serverPubkeys map[ServerID]*ecdh.PublicKe
 func (c *ClientMessager) ProcessPreviousAuction(auctionIBF *blind_auction.IBFVector, previousRoundMessage []byte) AuctionResult {
 	chunks, err := auctionIBF.Recover()
 	if err != nil {
-		// We might want to handle this — on the other hand, the only way to handle is to panic really
 		return AuctionResult{}
 	}
 
@@ -238,7 +271,7 @@ func (c *ClientMessager) ProcessPreviousAuction(auctionIBF *blind_auction.IBFVec
 		bids = append(bids, *blind_auction.AuctionDataFromChunk(chunk))
 	}
 
-	auctionEngine := blind_auction.NewAuctionEngine(c.Config.MessageSize*64, blind_auction.IBFChunkSize)
+	auctionEngine := blind_auction.NewAuctionEngine(uint32(c.Config.MessageSlots), 1)
 	// Run auction to determine winners
 	winners := auctionEngine.RunAuction(bids)
 
@@ -276,7 +309,9 @@ func (c *ClientMessager) PrepareMessage(currentRound int, previousRoundOutput *R
 		auctionIBF.InsertChunk(currentRoundAuctionData.EncodeToChunk())
 	}
 	auctionElements := auctionIBF.EncodeAsFieldElements()
-	messageElements := EncodeMessageToFieldElements(previousAuctionResult, make([]byte, c.Config.MessageSize*64), previousRoundMessage)
+
+	nBytesInFieldElement := (c.Config.MessageFieldOrder.BitLen() - 1) / 8
+	messageElements := EncodeMessageToFieldElements(previousAuctionResult, make([]byte, c.Config.MessageSlots*nBytesInFieldElement), previousRoundMessage, nBytesInFieldElement)
 
 	messageStreams, err := c.SecretShareMessage(currentRound, messageElements, auctionElements)
 	return messageStreams, previousAuctionResult.ShouldSend, err
@@ -292,41 +327,32 @@ func (c *ClientMessager) SecretShareMessage(currentRound int, messageElements []
 	}
 	slices.Sort(serverIDs) // Ensure deterministic order
 
-	// Note: we prepare the blinding vector before secret sharing the messages. The order doesn't matter from cryptographic standpoint, but we avoid a round of allocation and initialization this way.
+	// Note: we prepare the blinding vector before secret sharing the messages. The order doesn't matter since it's just addition, but we avoid a round of allocation and initialization this way.
 
 	auctionVectors := make(map[ServerID][]*big.Int, len(c.SharedSecrets))
 	for _, sId := range serverIDs {
 		sharedSecret := c.SharedSecrets[sId]
-		nEls := 2 * blind_auction.IBFVectorSize(c.Config.AuctionSlots)
-		auctionVectors[sId] = crypto.DeriveBlindingVector([]crypto.SharedKey{append([]byte{0}, sharedSecret...)}, uint32(currentRound), int32(nEls), crypto.AuctionFieldOrder)
+		auctionVectors[sId] = crypto.DeriveBlindingVector([]crypto.SharedKey{append([]byte{0}, sharedSecret...)}, uint32(currentRound), int32(len(auctionElements)), crypto.AuctionFieldOrder)
 	}
 
 	messageVectors := make(map[ServerID][]*big.Int, len(c.SharedSecrets))
 	for _, sId := range serverIDs {
 		sharedSecret := c.SharedSecrets[sId]
-		messageVectors[sId] = crypto.DeriveBlindingVector([]crypto.SharedKey{append([]byte{1}, sharedSecret...)}, uint32(currentRound), int32(c.Config.MessageSize), c.Config.MessageFieldOrder)
+		messageVectors[sId] = crypto.DeriveBlindingVector([]crypto.SharedKey{append([]byte{1}, sharedSecret...)}, uint32(currentRound), int32(len(messageElements)), c.Config.MessageFieldOrder)
 	}
 
-	// Use sorted serverIDs to create serverXs
-	serverXs := make([]*big.Int, len(serverIDs))
-	for i, sId := range serverIDs {
-		if sId == 0 {
-			panic("server id must not be 0")
-		}
-		serverXs[i] = big.NewInt(int64(sId))
-	}
-
-	for i := 0; i < int(c.Config.MessageSize); i++ {
-		mEvals := crypto.RandomPolynomialEvals(int(c.Config.MinServers)-1, serverXs, messageElements[i], c.Config.MessageFieldOrder)
+	serverXs := crypto.ServerIDsToXEvals(serverIDs, serverIDs)
+	for i, msgEl := range messageElements {
+		mEvals := crypto.RandomPolynomialEvals(int(c.Config.MinServers)-1, serverXs, msgEl, c.Config.MessageFieldOrder)
 		for j := 0; j < len(messageVectors); j++ {
-			msgVector := messageVectors[ServerID(serverXs[j].Int64())]
+			msgVector := messageVectors[ServerID(serverIDs[j])]
 			crypto.FieldAddInplace(msgVector[i], mEvals[j], c.Config.MessageFieldOrder)
 		}
 	}
 	for i, auctionEl := range auctionElements {
 		elEvals := crypto.RandomPolynomialEvals(int(c.Config.MinServers)-1, serverXs, auctionEl, crypto.AuctionFieldOrder)
 		for j := 0; j < len(auctionVectors); j++ {
-			auctionVector := auctionVectors[ServerID(serverXs[j].Int64())]
+			auctionVector := auctionVectors[ServerID(serverIDs[j])]
 			crypto.FieldAddInplace(auctionVector[i], elEvals[j], crypto.AuctionFieldOrder)
 		}
 	}
@@ -336,6 +362,7 @@ func (c *ClientMessager) SecretShareMessage(currentRound int, messageElements []
 	for _, sId := range serverIDs {
 		resp = append(resp, &ClientRoundMessage{
 			ServerID:      sId,
+			AllServerIds:  serverIDs,
 			RoundNumber:   currentRound,
 			AuctionVector: auctionVectors[sId],
 			MessageVector: messageVectors[sId],
@@ -347,17 +374,32 @@ func (c *ClientMessager) SecretShareMessage(currentRound int, messageElements []
 
 // EncodeMessageToFieldElements converts a message to field elements.
 // Places the message at the auction-determined offset if the client won a slot.
-func EncodeMessageToFieldElements(previousAuctionResult AuctionResult, messageBytes []byte, messageToEncode []byte) []*big.Int {
+func EncodeMessageToFieldElements(previousAuctionResult AuctionResult, messageBytes []byte, messageToEncode []byte, nBytesInElement int) []*big.Int {
 	if previousAuctionResult.ShouldSend {
 		for i := range messageToEncode {
-			messageBytes[i+previousAuctionResult.MessageStartIndex] = messageToEncode[i]
+			messageBytes[i+(previousAuctionResult.MessageStartIndex*nBytesInElement)] = messageToEncode[i]
 		}
 	}
 
-	messageElements := make([]*big.Int, len(messageBytes)/64)
-	for i := 0; i < len(messageBytes)/64; i++ {
-		messageElements[i] = new(big.Int).SetBytes(messageBytes[i*64 : (i+1)*64])
+	messageElements := make([]*big.Int, len(messageBytes)/nBytesInElement)
+	for i := 0; i < len(messageBytes)/nBytesInElement; i++ {
+		messageElements[i] = new(big.Int).SetBytes(messageBytes[i*nBytesInElement : (i+1)*nBytesInElement])
 	}
 
 	return messageElements
+}
+
+func DecodeMessageFromFieldElements(msgEls []*big.Int, nBytesInElement int) []byte {
+	msgBytes := make([]byte, len(msgEls)*nBytesInElement)
+	for i, el := range msgEls {
+		if el.Sign() == -1 || el.BitLen() > nBytesInElement*8 {
+			for j := i * nBytesInElement; j < (i+1)*nBytesInElement; j++ {
+				msgBytes[j] = 0
+			}
+			continue
+		}
+		el.FillBytes(msgBytes[i*nBytesInElement : (i+1)*nBytesInElement])
+	}
+
+	return msgBytes
 }

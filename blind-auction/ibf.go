@@ -3,7 +3,6 @@ package blind_auction
 import (
 	"crypto/sha256"
 	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"math/big"
@@ -39,7 +38,7 @@ func IBFVectorSize(nBuckets uint32) uint32 {
 // IBFVector implements a multi-level Invertible Bloom Filter for distributed auction scheduling.
 // The IBF is secret-shared across servers and reconstructed after threshold decryption.
 type IBFVector struct {
-	Chunks   [IBFNChunks][][IBFChunkSize]byte
+	Chunks   [IBFNChunks][]big.Int
 	Counters [IBFNChunks][]uint64
 }
 
@@ -49,7 +48,7 @@ func (v *IBFVector) String() string {
 	for level := range v.Chunks {
 		res += fmt.Sprintf("L%d: ", level)
 		for chunk := range v.Chunks[level] {
-			res += hex.EncodeToString(v.Chunks[level][chunk][:])
+			res += v.Chunks[level][chunk].String()
 			res += fmt.Sprintf(" (%d)", v.Counters[level][chunk])
 			res += "\n"
 		}
@@ -65,7 +64,7 @@ func NewIBFVector(messageSlots uint32) *IBFVector {
 	fac := 1.0
 	for level := range res.Chunks {
 		slotsInLevel := int(float64(messageSlots) * fac)
-		res.Chunks[level] = make([][IBFChunkSize]byte, slotsInLevel)
+		res.Chunks[level] = make([]big.Int, slotsInLevel)
 		res.Counters[level] = make([]uint64, slotsInLevel)
 		fac *= IBFShrinkFactor
 	}
@@ -91,9 +90,7 @@ func (v *IBFVector) InsertChunk(msg [IBFChunkSize]byte) {
 	for level := 0; level < IBFNChunks; level++ {
 		index := ChunkIndex(msg, level, len(v.Chunks[level]))
 
-		currentEl := ChunkToElement(v.Chunks[level][index])
-		crypto.FieldAddInplace(currentEl, msgAsEl, crypto.AuctionFieldOrder)
-		v.Chunks[level][index] = ElementToChunk(currentEl)
+		crypto.FieldAddInplace(&v.Chunks[level][index], msgAsEl, crypto.AuctionFieldOrder)
 		v.Counters[level][index] += 1
 	}
 }
@@ -104,7 +101,7 @@ func (v *IBFVector) EncodeAsFieldElements() []*big.Int {
 	res := []*big.Int{}
 	for level := range v.Chunks {
 		for chunk := range v.Chunks[level] {
-			res = append(res, ChunkToElement(v.Chunks[level][chunk]))
+			res = append(res, new(big.Int).Set(&v.Chunks[level][chunk]))
 		}
 	}
 
@@ -121,7 +118,7 @@ func (v *IBFVector) DecodeFromElements(elements []*big.Int) *IBFVector {
 	index := uint32(0)
 	for level := range v.Chunks {
 		for chunk := range v.Chunks[level] {
-			v.Chunks[level][chunk] = ElementToChunk(elements[index])
+			v.Chunks[level][chunk].Set(elements[index])
 			index += 1
 		}
 	}
@@ -138,6 +135,7 @@ func (v *IBFVector) DecodeFromElements(elements []*big.Int) *IBFVector {
 
 // ChunkIndex computes the bucket index for a chunk at a specific IBF level.
 func ChunkIndex(chunk [IBFChunkSize]byte, level int, itemsInLevel int) uint64 {
+	// TODO: this is really not very fast
 	dataToHash := append([]byte(fmt.Sprintf("%d", level)), chunk[:]...)
 	innerIndexSeed := sha256.Sum256(dataToHash)
 	return uint64(binary.BigEndian.Uint64(innerIndexSeed[0:8])) % uint64(itemsInLevel)
@@ -151,11 +149,11 @@ func (v *IBFVector) Recover() ([][IBFChunkSize]byte, error) {
 
 	// Deep copy chunks and counters
 	for level := range v.Chunks {
-		workingCopy.Chunks[level] = make([][IBFChunkSize]byte, len(v.Chunks[level]))
+		workingCopy.Chunks[level] = make([]big.Int, len(v.Chunks[level]))
 		workingCopy.Counters[level] = make([]uint64, len(v.Counters[level]))
 
 		for i := range v.Chunks[level] {
-			copy(workingCopy.Chunks[level][i][:], v.Chunks[level][i][:])
+			workingCopy.Chunks[level][i].Set(&v.Chunks[level][i])
 			workingCopy.Counters[level][i] = v.Counters[level][i]
 		}
 	}
@@ -165,6 +163,8 @@ func (v *IBFVector) Recover() ([][IBFChunkSize]byte, error) {
 
 	// Keep track of whether we made progress in the current iteration
 	madeProgress := true
+
+	chunkEl := new(big.Int)
 
 	// Continue peeling until no more progress can be made
 	for madeProgress {
@@ -176,11 +176,11 @@ func (v *IBFVector) Recover() ([][IBFChunkSize]byte, error) {
 				// Found a pure cell
 				if workingCopy.Counters[level][i] == 1 {
 					// Get the chunk from this cell
-					chunk := workingCopy.Chunks[level][i]
+					chunkEl.Set(&workingCopy.Chunks[level][i])
+					chunk := ElementToChunk(chunkEl)
 
 					// Record this chunk as recovered
 					recovered = append(recovered, chunk)
-					chunkAsEl := ChunkToElement(chunk)
 
 					// Remove this chunk from all levels to continue peeling
 					for innerLevel := range workingCopy.Chunks {
@@ -192,10 +192,7 @@ func (v *IBFVector) Recover() ([][IBFChunkSize]byte, error) {
 						}
 
 						// Remove the chunk from this cell
-						currentEl := ChunkToElement(workingCopy.Chunks[innerLevel][innerIndex])
-						crypto.FieldSubInplace(currentEl, chunkAsEl, crypto.AuctionFieldOrder)
-						workingCopy.Chunks[innerLevel][innerIndex] = ElementToChunk(currentEl)
-
+						crypto.FieldSubInplace(&workingCopy.Chunks[innerLevel][innerIndex], chunkEl, crypto.AuctionFieldOrder)
 						workingCopy.Counters[innerLevel][innerIndex]--
 					}
 
@@ -222,7 +219,7 @@ func (v *IBFVector) Bytes() []byte {
 	res = binary.BigEndian.AppendUint32(res, uint32(len(v.Chunks[0])))
 	for level := range v.Chunks {
 		for chunk := range v.Chunks[level] {
-			res = append(res, v.Chunks[level][chunk][:]...)
+			res = append(res, v.Chunks[level][chunk].Bytes()...)
 		}
 	}
 

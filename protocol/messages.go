@@ -1,14 +1,18 @@
 package protocol
 
 import (
+	"crypto/ecdh"
 	"encoding/json"
 	"errors"
 	"io"
 	"math/big"
+	"slices"
 
 	blind_auction "github.com/flashbots/adcnet/blind-auction"
 	"github.com/flashbots/adcnet/crypto"
 )
+
+type ServerID = crypto.ServerID
 
 // Signed wraps a message with Ed25519 signature for authentication.
 type Signed[T any] struct {
@@ -61,12 +65,11 @@ func (s *Signed[T]) Recover() (*T, crypto.PublicKey, error) {
 	return s.Object, s.PublicKey, nil
 }
 
-type ServerID int32
-
 // ClientRoundMessage contains a client's secret share for one server.
 type ClientRoundMessage struct {
 	RoundNumber   int
 	ServerID      ServerID
+	AllServerIds  []ServerID
 	AuctionVector []*big.Int
 	MessageVector []*big.Int
 }
@@ -75,6 +78,7 @@ type ClientRoundMessage struct {
 type AggregatedClientMessages struct {
 	RoundNumber   int
 	ServerID      ServerID
+	AllServerIds  []ServerID
 	AuctionVector []*big.Int
 	MessageVector []*big.Int
 	UserPKs       []crypto.PublicKey
@@ -82,9 +86,19 @@ type AggregatedClientMessages struct {
 
 // UnionInplace adds another aggregate's vectors to this one in-place.
 // Performs field addition for both auction and message vectors.
-func (m *AggregatedClientMessages) UnionInplace(o *AggregatedClientMessages) *AggregatedClientMessages {
-	// Should probably assert they are equal
-	m.RoundNumber = o.RoundNumber
+func (m *AggregatedClientMessages) UnionInplace(o *AggregatedClientMessages, messageFieldOrder *big.Int) (*AggregatedClientMessages, error) {
+	if m.RoundNumber == 0 {
+		m.RoundNumber = o.RoundNumber
+	} else if m.RoundNumber != o.RoundNumber {
+		return nil, errors.New("mismatching rounds")
+	}
+
+	if m.AllServerIds == nil {
+		m.AllServerIds = o.AllServerIds
+	} else if !slices.Equal(m.AllServerIds, o.AllServerIds) {
+		return nil, errors.New("mismatching share servers")
+	}
+
 	if m.AuctionVector == nil {
 		m.AuctionVector = make([]*big.Int, len(o.AuctionVector))
 		for i := range m.AuctionVector {
@@ -105,12 +119,12 @@ func (m *AggregatedClientMessages) UnionInplace(o *AggregatedClientMessages) *Ag
 		crypto.FieldAddInplace(m.AuctionVector[i], o.AuctionVector[i], crypto.AuctionFieldOrder)
 	}
 	for i := range o.MessageVector {
-		crypto.FieldAddInplace(m.MessageVector[i], o.MessageVector[i], crypto.MessageFieldOrder)
+		crypto.FieldAddInplace(m.MessageVector[i], o.MessageVector[i], messageFieldOrder)
 	}
 
 	m.UserPKs = append(m.UserPKs, o.UserPKs...)
 
-	return m
+	return m, nil
 }
 
 // ServerPartialDecryptionMessage contains a server's unblinded share for threshold reconstruction.
@@ -122,6 +136,26 @@ type ServerPartialDecryptionMessage struct {
 	MessageVector     []*big.Int
 }
 
+func (m *ServerPartialDecryptionMessage) Clone() *ServerPartialDecryptionMessage {
+	ret := &ServerPartialDecryptionMessage{
+		ServerID:          m.ServerID,
+		OriginalAggregate: m.OriginalAggregate,
+		UserPKs:           make([]crypto.PublicKey, len(m.UserPKs)),
+		AuctionVector:     make([]*big.Int, len(m.AuctionVector)),
+		MessageVector:     make([]*big.Int, len(m.MessageVector)),
+	}
+
+	copy(ret.UserPKs, m.UserPKs)
+	for i := range ret.AuctionVector {
+		ret.AuctionVector[i] = new(big.Int).Set(m.AuctionVector[i])
+	}
+	for i := range ret.MessageVector {
+		ret.MessageVector[i] = new(big.Int).Set(m.MessageVector[i])
+	}
+
+	return ret
+}
+
 // RoundBroadcast contains the final reconstructed broadcast for a round.
 type RoundBroadcast struct {
 	RoundNumber   int
@@ -129,25 +163,22 @@ type RoundBroadcast struct {
 	MessageVector []byte
 }
 
+type ClientRegistrationBlob struct {
+	SigningPublicKey  crypto.PublicKey `json:"signing_public_key"`
+	ExchangePublicKey *ecdh.PublicKey  `json:"exchange_public_key"`
+}
+
 // AggregatorRegistrationBlob registers an aggregator with servers during setup.
 type AggregatorRegistrationBlob struct {
-	// PublicKey authenticates aggregated messages
-	PublicKey crypto.PublicKey `json:"public_key"`
-
-	// Level indicates position in aggregation hierarchy (0 = leaf)
-	Level uint32 `json:"level"`
+	SigningPublicKey crypto.PublicKey `json:"signing_public_key"`
+	Level            uint32           `json:"level"`
 }
 
 // ServerRegistrationBlob registers a server in the anytrust group during setup.
 type ServerRegistrationBlob struct {
-	// PublicKey authenticates partial decryption shares
-	PublicKey crypto.PublicKey `json:"public_key"`
-
-	// KemPublicKey establishes shared secrets with clients
-	KemPublicKey crypto.PublicKey `json:"kem_public_key"`
-
-	// IsLeader indicates if this server collects shares and produces final output
-	IsLeader bool `json:"is_leader"`
+	SigningPublicKey  crypto.PublicKey `json:"signing_public_key"`
+	ExchangePublicKey *ecdh.PublicKey  `json:"exchange_public_key"`
+	IsLeader          bool             `json:"is_leader"`
 }
 
 // UnmarshalMessage deserializes a message from JSON.
