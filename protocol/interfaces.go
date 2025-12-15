@@ -2,7 +2,6 @@ package protocol
 
 import (
 	"context"
-	"math/big"
 	"time"
 
 	blind_auction "github.com/flashbots/adcnet/blind-auction"
@@ -10,12 +9,11 @@ import (
 
 // Client broadcasts anonymous messages using auction-based scheduling.
 type Client interface {
-	// PrepareMessage creates secret-shared messages for the current round.
-	// Returns one message per server containing the client's share.
+	// PrepareMessage creates a blinded message for the current round.
 	PrepareMessage(ctx context.Context, round int,
 		previousRoundOutput *RoundBroadcast,
 		message []byte,
-		auctionData *blind_auction.AuctionData) ([]*ClientRoundMessage, bool, error)
+		auctionData *blind_auction.AuctionData) (*ClientRoundMessage, bool, error)
 }
 
 // Aggregator combines client messages to reduce bandwidth requirements.
@@ -24,22 +22,21 @@ type Aggregator interface {
 	// Verifies signatures and authorization before aggregation.
 	AggregateClientMessages(round int,
 		msgs []*Signed[ClientRoundMessage],
-		authorizedClients map[string]bool) ([]*AggregatedClientMessages, error)
+		authorizedClients map[string]bool) (*AggregatedClientMessages, error)
 
 	// AggregateAggregates combines messages from lower-level aggregators.
 	AggregateAggregates(round int,
 		msgs []*AggregatedClientMessages) (*AggregatedClientMessages, error)
 }
 
-// Server provides threshold decryption in the anytrust model.
+// Server removes its blinding contribution from aggregated messages.
 type Server interface {
 	// UnblindAggregate removes this server's blinding factors from aggregated messages.
-	// Creates a partial decryption share for threshold reconstruction.
 	UnblindAggregate(currentRound int,
 		aggregate *AggregatedClientMessages,
 		previousRoundAuction *blind_auction.IBFVector) (*ServerPartialDecryptionMessage, error)
 
-	// UnblindPartialMessages combines partial decryptions from threshold servers
+	// UnblindPartialMessages combines all server unblinding contributions
 	// to produce the final broadcast containing messages and auction results.
 	UnblindPartialMessages(msgs []*ServerPartialDecryptionMessage) (*RoundBroadcast, error)
 }
@@ -49,14 +46,8 @@ type ADCNetConfig struct {
 	// AuctionSlots is the number of slots in the IBF for auction data.
 	AuctionSlots uint32
 
-	// MessageSlots is the number of field elements in the message vector.
-	MessageSlots int
-
-	// MessageFieldOrder is the prime modulus for message field arithmetic.
-	MessageFieldOrder *big.Int
-
-	// MinServers is the threshold of servers needed for reconstruction.
-	MinServers uint32
+	// MessageLength is the byte length of the message vector.
+	MessageLength int
 
 	// MinClients is the minimum number of clients for anonymity.
 	MinClients uint32
@@ -68,6 +59,7 @@ type ADCNetConfig struct {
 	RoundsPerWindow uint32
 }
 
+// AuctionSlotsForConfig calculates total IBF vector size for the configuration.
 func AuctionSlotsForConfig(c *ADCNetConfig) uint32 {
 	return 2 * blind_auction.IBFVectorSize(c.AuctionSlots)
 }

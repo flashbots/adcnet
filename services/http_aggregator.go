@@ -20,7 +20,7 @@ type HTTPAggregator struct {
 	service    *protocol.AggregatorService
 	roundCoord *protocol.LocalRoundCoordinator
 	registry   *ServiceRegistry
-	httpClient *http.Client
+	HttpClient *http.Client
 
 	mu           sync.RWMutex
 	currentRound protocol.Round
@@ -36,7 +36,7 @@ func NewHTTPAggregator(config *ServiceConfig) (*HTTPAggregator, error) {
 		service:    service,
 		roundCoord: roundCoord,
 		registry:   NewServiceRegistry(),
-		httpClient: &http.Client{},
+		HttpClient: &http.Client{},
 	}, nil
 }
 
@@ -53,12 +53,8 @@ func (a *HTTPAggregator) RegisterRoutes(r chi.Router) {
 
 // Start begins the aggregator service.
 func (a *HTTPAggregator) Start(ctx context.Context) error {
-	// Start round coordinator
 	a.roundCoord.Start(ctx)
-
-	// Subscribe to round transitions
 	go a.handleRoundTransitions(ctx)
-
 	return nil
 }
 
@@ -72,14 +68,11 @@ func (a *HTTPAggregator) handleRoundTransitions(ctx context.Context) {
 			return
 		case round := <-roundChan:
 			if round.Context == protocol.AggregatorRoundContext {
-				// Send aggregates to servers
-				// NOTE: we can send smaler batches without ending for the context change (additive), to increase bandwidth
 				if err := a.sendAggregates(); err != nil {
 					fmt.Printf("Aggregator %s: error sending round %d aggregates: %v\n",
 						a.config.ServiceID, round.Number, err)
 				}
 			} else if round.Context == protocol.ServerPartialRoundContext {
-				// Start accepting messages for next round
 				a.mu.Lock()
 				a.currentRound = protocol.Round{Number: round.Number + 1, Context: protocol.ClientRoundContext}
 				a.service.AdvanceToRound(a.currentRound)
@@ -89,7 +82,8 @@ func (a *HTTPAggregator) handleRoundTransitions(ctx context.Context) {
 	}
 }
 
-// sendAggregates sends aggregated messages to servers.
+// sendAggregates sends aggregated messages to all servers.
+// All servers must receive the aggregate to remove their XOR blinding factors.
 func (a *HTTPAggregator) sendAggregates() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -99,23 +93,21 @@ func (a *HTTPAggregator) sendAggregates() error {
 		servers = append(servers, srv)
 	}
 
-	// Send each aggregate to its target server
-	aggregates := a.service.CurrentAggregates()
-	for _, agg := range aggregates {
-		for _, srv := range servers {
-			// Find matching server by ID
-			if protocol.ServerID(crypto.PublicKeyToServerID(srv.PublicKey)) == agg.ServerID {
-				if err := a.sendToServer(srv, agg); err != nil {
-					return fmt.Errorf("send to server %s: %w", srv.ServiceID, err)
-				}
-				fmt.Printf("%s: sent aggregate for round %d to %s\n", a.config.ServiceID, a.currentRound.Number, srv.ServiceID)
-				break
-			}
-		}
+	aggregate := a.service.CurrentAggregates()
+	if aggregate == nil {
+		return nil
 	}
 
-	fmt.Printf("%s: sent aggregates %d to %d servers\n", a.config.ServiceID, len(aggregates), len(servers))
+	// Send aggregate to ALL servers since all must contribute their XOR blinding
+	for _, srv := range servers {
+		if err := a.sendToServer(srv, aggregate); err != nil {
+			return fmt.Errorf("send to server %s: %w", srv.ServiceID, err)
+		}
+		fmt.Printf("%s: sent aggregate for round %d to %s\n",
+			a.config.ServiceID, a.currentRound.Number, srv.ServiceID)
+	}
 
+	fmt.Printf("%s: sent aggregate to %d servers\n", a.config.ServiceID, len(servers))
 	return nil
 }
 
@@ -127,7 +119,7 @@ func (a *HTTPAggregator) sendToServer(srv *ServiceEndpoint, agg *protocol.Aggreg
 		return err
 	}
 
-	resp, err := a.httpClient.Post(
+	resp, err := a.HttpClient.Post(
 		fmt.Sprintf("%s/aggregate", srv.HTTPEndpoint),
 		"application/json",
 		bytes.NewReader(body),
@@ -199,18 +191,19 @@ func (a *HTTPAggregator) handleClientMessages(w http.ResponseWriter, r *http.Req
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	aggregates, err := a.service.ProcessClientMessages(req.Messages)
+	aggregate, err := a.service.ProcessClientMessages(req.Messages)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	fmt.Printf("%s: processed %d client messages for round %d and stored %d aggregates\n", a.config.ServiceID, len(req.Messages), a.currentRound.Number, len(aggregates))
+	fmt.Printf("%s: processed %d client messages for round %d\n",
+		a.config.ServiceID, len(req.Messages), a.currentRound.Number)
 
-	json.NewEncoder(w).Encode(aggregates)
+	json.NewEncoder(w).Encode(aggregate)
 }
 
-// handleAggregateMessages receives messages from other aggregators.
+// handleAggregateMessages receives messages from other aggregators for hierarchical aggregation.
 func (a *HTTPAggregator) handleAggregateMessages(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Messages []*protocol.AggregatedClientMessages `json:"messages"`
@@ -220,7 +213,6 @@ func (a *HTTPAggregator) handleAggregateMessages(w http.ResponseWriter, r *http.
 		return
 	}
 
-	// Process hierarchical aggregation
 	result, err := (&protocol.AggregatorMessager{Config: a.config.ADCNetConfig}).
 		AggregateAggregates(int(a.currentRound.Number), req.Messages)
 	if err != nil {
@@ -239,9 +231,13 @@ func (a *HTTPAggregator) handleGetAggregates(w http.ResponseWriter, r *http.Requ
 	defer a.mu.Unlock()
 
 	currentAggregate := a.service.CurrentAggregates()
+	if currentAggregate == nil {
+		http.Error(w, "no aggregate available", http.StatusNotFound)
+		return
+	}
 
-	if currentAggregate != nil && fmt.Sprintf("%d", currentAggregate[0].RoundNumber) != round {
-		http.Error(w, "current aggregate is for a different round than supplied", http.StatusBadRequest)
+	if fmt.Sprintf("%d", currentAggregate.RoundNumber) != round {
+		http.Error(w, "aggregate is for a different round", http.StatusBadRequest)
 		return
 	}
 

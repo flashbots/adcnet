@@ -22,7 +22,7 @@ type HTTPServer struct {
 	service    *protocol.ServerService
 	roundCoord *protocol.LocalRoundCoordinator
 	registry   *ServiceRegistry
-	httpClient *http.Client
+	HttpClient *http.Client
 	isLeader   bool
 
 	signingKey  crypto.PrivateKey
@@ -46,7 +46,7 @@ func NewHTTPServer(config *ServiceConfig, serverID protocol.ServerID, signingKey
 		service:         service,
 		roundCoord:      roundCoord,
 		registry:        NewServiceRegistry(),
-		httpClient:      &http.Client{},
+		HttpClient:      &http.Client{},
 		isLeader:        isLeader,
 		signingKey:      signingKey,
 		exchangeKey:     exchangeKey,
@@ -67,12 +67,8 @@ func (s *HTTPServer) RegisterRoutes(r chi.Router) {
 
 // Start begins the server service.
 func (s *HTTPServer) Start(ctx context.Context) error {
-	// Start round coordinator
 	s.roundCoord.Start(ctx)
-
-	// Subscribe to round transitions
 	go s.handleRoundTransitions(ctx)
-
 	return nil
 }
 
@@ -90,18 +86,18 @@ func (s *HTTPServer) handleRoundTransitions(ctx context.Context) {
 			if round.Context == protocol.ClientRoundContext {
 				s.service.AdvanceToRound(round)
 			} else if round.Context == protocol.ServerPartialRoundContext {
-				if s.currentPartialDecryption != nil && s.currentPartialDecryption.OriginalAggregate.RoundNumber == round.Number {
+				if s.currentPartialDecryption != nil &&
+					s.currentPartialDecryption.OriginalAggregate.RoundNumber == round.Number {
 					go s.sharePartialDecryption(s.currentPartialDecryption)
 				}
 				s.currentPartialDecryption = nil
-			} else if round.Context == protocol.ServerLeaderRoundContext {
 			}
 			s.mu.Unlock()
 		}
 	}
 }
 
-// handleRegister registers other servers with this server.
+// handleRegister registers other servers and clients with this server.
 func (s *HTTPServer) handleRegister(w http.ResponseWriter, r *http.Request) {
 	var req RegistrationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -122,7 +118,6 @@ func (s *HTTPServer) handleRegister(w http.ResponseWriter, r *http.Request) {
 		ExchangeKey:  req.ExchangeKey,
 	}
 
-	// Parse ECDH key
 	keyBytes, err := hex.DecodeString(req.ExchangeKey)
 	if err != nil {
 		http.Error(w, "invalid exchange key", http.StatusBadRequest)
@@ -138,13 +133,18 @@ func (s *HTTPServer) handleRegister(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if req.ServiceType == ServerService {
+	switch req.ServiceType {
+	case ServerService:
 		s.registry.Servers[req.ServiceID] = endpoint
 		json.NewEncoder(w).Encode(&RegistrationResponse{Success: true})
-	} else if req.ServiceType == ClientService {
+
+	case ClientService:
 		s.registry.Clients[req.ServiceID] = endpoint
 		s.service.RegisterClient(signingPubkey, ecdhKey)
 		json.NewEncoder(w).Encode(&RegistrationResponse{Success: true})
+
+	default:
+		http.Error(w, "invalid service type", http.StatusBadRequest)
 	}
 }
 
@@ -156,7 +156,6 @@ func (s *HTTPServer) handleAggregate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO: don't block here, process in the background
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -172,13 +171,13 @@ func (s *HTTPServer) handleAggregate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.currentPartialDecryption = partial
-
 	fmt.Printf("%s: processed aggregate\n", s.config.ServiceID)
 
 	w.WriteHeader(http.StatusOK)
 }
 
 // handlePartialDecryption receives partial decryptions from other servers.
+// Once all servers have contributed, the leader reconstructs the final broadcast.
 func (s *HTTPServer) handlePartialDecryption(w http.ResponseWriter, r *http.Request) {
 	var req PartialDecryptionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -200,7 +199,6 @@ func (s *HTTPServer) handlePartialDecryption(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// If we got a broadcast (leader completed reconstruction), store and share it
 	if broadcast != nil {
 		fmt.Printf("%s (isLeader=%v): recovered broadcast\n", s.config.ServiceID, s.isLeader)
 		s.roundBroadcasts[broadcast.RoundNumber] = broadcast
@@ -215,8 +213,6 @@ func (s *HTTPServer) handlePartialDecryption(w http.ResponseWriter, r *http.Requ
 
 // handleGetRoundBroadcast returns the broadcast for a specific round.
 func (s *HTTPServer) handleGetRoundBroadcast(w http.ResponseWriter, r *http.Request) {
-	// round := chi.URLParam(r, "round") // unused for now
-
 	s.mu.RLock()
 	broadcast := s.roundBroadcasts[s.currentRound.Number]
 	s.mu.RUnlock()
@@ -229,12 +225,13 @@ func (s *HTTPServer) handleGetRoundBroadcast(w http.ResponseWriter, r *http.Requ
 	json.NewEncoder(w).Encode(&RoundBroadcastResponse{Broadcast: broadcast})
 }
 
-// sharePartialDecryption shares a partial decryption with other servers.
+// sharePartialDecryption shares this server's XOR blinding contribution with other servers.
 func (s *HTTPServer) sharePartialDecryption(partial *protocol.ServerPartialDecryptionMessage) {
 	req := &PartialDecryptionRequest{Message: partial}
 	body, err := json.Marshal(req)
 	if err != nil {
-		fmt.Printf("Server %s: error marshaling partial decryption: %v\n", s.config.ServiceID, err)
+		fmt.Printf("Server %s: error marshaling partial decryption: %v\n",
+			s.config.ServiceID, err)
 		return
 	}
 
@@ -246,7 +243,7 @@ func (s *HTTPServer) sharePartialDecryption(partial *protocol.ServerPartialDecry
 	s.mu.RUnlock()
 
 	for _, srv := range servers {
-		resp, err := s.httpClient.Post(
+		resp, err := s.HttpClient.Post(
 			fmt.Sprintf("%s/partial-decryption", srv.HTTPEndpoint),
 			"application/json",
 			bytes.NewReader(body),
@@ -260,16 +257,16 @@ func (s *HTTPServer) sharePartialDecryption(partial *protocol.ServerPartialDecry
 	}
 }
 
-// shareBroadcast shares the round broadcast with clients.
+// shareBroadcast shares the round broadcast with all registered clients.
 func (s *HTTPServer) shareBroadcast(broadcast *protocol.RoundBroadcast) {
 	req := &RoundBroadcastResponse{Broadcast: broadcast}
 	body, err := json.Marshal(req)
 	if err != nil {
-		fmt.Printf("Server %s: error marshaling broadcast: %v\n", s.config.ServiceID, err)
+		fmt.Printf("Server %s: error marshaling broadcast: %v\n",
+			s.config.ServiceID, err)
 		return
 	}
 
-	// Send to all registered clients
 	s.mu.RLock()
 	clients := make([]*ServiceEndpoint, 0, len(s.registry.Clients))
 	for _, client := range s.registry.Clients {
@@ -278,7 +275,7 @@ func (s *HTTPServer) shareBroadcast(broadcast *protocol.RoundBroadcast) {
 	s.mu.RUnlock()
 
 	for _, client := range clients {
-		resp, err := s.httpClient.Post(
+		resp, err := s.HttpClient.Post(
 			fmt.Sprintf("%s/round-broadcast", client.HTTPEndpoint),
 			"application/json",
 			bytes.NewReader(body),
@@ -290,5 +287,6 @@ func (s *HTTPServer) shareBroadcast(broadcast *protocol.RoundBroadcast) {
 		}
 		resp.Body.Close()
 	}
-	fmt.Printf("%s: sent broadcast for round %d to %d clients\n", s.config.ServiceID, broadcast.RoundNumber, len(clients))
+	fmt.Printf("%s: sent broadcast for round %d to %d clients\n",
+		s.config.ServiceID, broadcast.RoundNumber, len(clients))
 }

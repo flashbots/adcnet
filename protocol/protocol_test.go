@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/rand"
 	"fmt"
-	"math/big"
 	mrand "math/rand"
 	"slices"
 	"testing"
@@ -20,62 +19,48 @@ func sharedSecret(path string) crypto.SharedKey {
 	return crypto.NewSharedKey([]byte(path))
 }
 
-func TestSecretSharingClient(t *testing.T) {
+func TestBlindingClient(t *testing.T) {
 	config := &ADCNetConfig{
-		AuctionSlots:      10,
-		MessageSlots:      3,
-		MinServers:        2,
-		MessageFieldOrder: crypto.MessageFieldOrder,
+		AuctionSlots:  10,
+		MessageLength: 20,
 	}
 
 	c := &ClientMessager{
 		Config:        config,
-		SharedSecrets: map[ServerID]crypto.SharedKey{1: sharedSecret("c1s1"), 2: sharedSecret("c1s2"), 3: sharedSecret("c1s3")},
+		SharedSecrets: map[ServerID]crypto.SharedKey{1: sharedSecret("c1s1"), 2: sharedSecret("c1s2")},
 	}
 
 	auctionIBF := blind_auction.NewIBFVector(config.AuctionSlots)
 	auctionIBF.InsertChunk((&blind_auction.AuctionData{
 		MessageHash: [32]byte{},
 		Weight:      10,
-		Size:        1,
+		Size:        8,
 	}).EncodeToChunk())
 
-	nBytesInFieldElement := (c.Config.MessageFieldOrder.BitLen() - 1) / 8
-	require.Equal(t, nBytesInFieldElement, 64) // Finicky setup
-	msgEls := EncodeMessageToFieldElements(AuctionResult{ShouldSend: true, MessageStartIndex: 1}, make([]byte, 64*3), []byte{10}, nBytesInFieldElement)
-	require.Len(t, msgEls, 3)
-	require.Zero(t, msgEls[0].Cmp(big.NewInt(0)), msgEls[0])
-	expectedMsgEl := big.NewInt(0).SetBits([]big.Word{0, 0, 0, 0, 0, 0, 0, 0xa00000000000000})
-	require.Zero(t, expectedMsgEl.Cmp(msgEls[1]), msgEls[1].Bits())
-	require.Zero(t, msgEls[2].Cmp(big.NewInt(0)), msgEls[2])
+	msgEls := EncodeMessageToFieldElements(AuctionResult{ShouldSend: true, MessageStartIndex: 0}, make([]byte, 20), []byte{10})
+	require.Len(t, msgEls, 20)
+	expectedMsg := make([]byte, 20)
+	expectedMsg[0] = 0xa
+	require.Equal(t, expectedMsg, msgEls)
 
-	roundMessage, err := c.SecretShareMessage(1, msgEls, auctionIBF.EncodeAsFieldElements())
+	roundMessage, err := c.BlindClientMessage(1, msgEls, auctionIBF.EncodeAsFieldElements())
 	require.NoError(t, err)
-	require.Len(t, roundMessage, 3)
+	require.NotNil(t, roundMessage)
 
-	s1MessageBlindingVector := crypto.DeriveBlindingVector([]crypto.SharedKey{append([]byte{1}, sharedSecret("c1s1")...)}, 1, int32(config.MessageSlots), config.MessageFieldOrder)
-	s2MessageBlindingVector := crypto.DeriveBlindingVector([]crypto.SharedKey{append([]byte{1}, sharedSecret("c1s2")...)}, 1, int32(config.MessageSlots), config.MessageFieldOrder)
+	s1MessageBlindingVector := crypto.DeriveXorBlindingVector([]crypto.SharedKey{append([]byte{1}, sharedSecret("c1s1")...)}, 1, int32(config.MessageLength))
+	s2MessageBlindingVector := crypto.DeriveXorBlindingVector([]crypto.SharedKey{append([]byte{1}, sharedSecret("c1s2")...)}, 1, int32(config.MessageLength))
 
-	s1i0Eval := crypto.FieldSubInplace(new(big.Int).Set(roundMessage[0].MessageVector[0]), s1MessageBlindingVector[0], config.MessageFieldOrder)
-	s2i0Eval := crypto.FieldSubInplace(new(big.Int).Set(roundMessage[1].MessageVector[0]), s2MessageBlindingVector[0], config.MessageFieldOrder)
+	sEval := crypto.XorInplace(s1MessageBlindingVector, s2MessageBlindingVector)
+	unblindedMessage := crypto.XorInplace(sEval, roundMessage.MessageVector)
 
-	i0Interpolation := crypto.LagrangeInterpolation([]*big.Int{big.NewInt(1), big.NewInt(2)}, []*big.Int{s1i0Eval, s2i0Eval}, nil, config.MessageFieldOrder)
-	require.Zero(t, i0Interpolation.Cmp(big.NewInt(0)), i0Interpolation.String())
+	require.Equal(t, expectedMsg, unblindedMessage)
 
-	s1i1Eval := crypto.FieldSubInplace(new(big.Int).Set(roundMessage[0].MessageVector[1]), s1MessageBlindingVector[1], config.MessageFieldOrder)
-	s2i1Eval := crypto.FieldSubInplace(new(big.Int).Set(roundMessage[1].MessageVector[1]), s2MessageBlindingVector[1], config.MessageFieldOrder)
-
-	require.Zero(t, crypto.LagrangeInterpolation([]*big.Int{big.NewInt(1), big.NewInt(2)}, []*big.Int{s1i1Eval, s2i1Eval}, nil, config.MessageFieldOrder).Cmp(expectedMsgEl))
-
-	// TODO: add a second client!
 }
 
 func TestE2E(t *testing.T) {
 	config := &ADCNetConfig{
-		AuctionSlots:      10,
-		MessageSlots:      3,
-		MessageFieldOrder: new(big.Int).Set(crypto.MessageFieldOrder),
-		MinServers:        2,
+		AuctionSlots:  10,
+		MessageLength: 192,
 	}
 
 	// client1PK, client1SK, _ := crypto.GenerateKeyPair()
@@ -122,7 +107,7 @@ func TestE2E(t *testing.T) {
 	}
 	for i := range msgsData {
 		rand.Read(msgsData[i])
-		previousRoundOutput.AuctionVector.InsertChunk(blind_auction.AuctionDataFromMessage(msgsData[i], 10, (config.MessageFieldOrder.BitLen()-1)/8).EncodeToChunk())
+		previousRoundOutput.AuctionVector.InsertChunk(blind_auction.AuctionDataFromMessage(msgsData[i], 10).EncodeToChunk())
 	}
 
 	recoveredChunks, err := previousRoundOutput.AuctionVector.Recover()
@@ -130,7 +115,7 @@ func TestE2E(t *testing.T) {
 	require.Len(t, recoveredChunks, 3)
 
 	for i := range msgsData {
-		chunk := blind_auction.AuctionDataFromMessage(msgsData[i], 10, (config.MessageFieldOrder.BitLen()-1)/8).EncodeToChunk()
+		chunk := blind_auction.AuctionDataFromMessage(msgsData[i], 10).EncodeToChunk()
 		require.Contains(t, recoveredChunks, chunk)
 	}
 
@@ -138,41 +123,34 @@ func TestE2E(t *testing.T) {
 	for i := range recoveredAuctionData {
 		recoveredAuctionData[i] = *blind_auction.AuctionDataFromChunk(recoveredChunks[i])
 	}
-	auctionWinnders := blind_auction.NewAuctionEngine(uint32(config.MessageSlots), 1).RunAuction(recoveredAuctionData)
+	auctionWinnders := blind_auction.NewAuctionEngine(uint32(config.MessageLength), 1).RunAuction(recoveredAuctionData)
 	require.Len(t, auctionWinnders, 2, recoveredAuctionData)
 
 	clientMsgs := []*Signed[ClientRoundMessage]{}
 	talkingClients := []int{}
 	for c := range clients {
-		rawClientMessages, talking, err := clients[c].PrepareMessage(2, previousRoundOutput, msgsData[c], nil /* ignore the auction for now */)
+		rawClientMessage, talking, err := clients[c].PrepareMessage(2, previousRoundOutput, msgsData[c], nil /* ignore the auction for now */)
 		require.NoError(t, err)
 
 		if talking {
 			talkingClients = append(talkingClients, c)
 		}
 
-		require.Len(t, rawClientMessages, 3)
-		for s := range rawClientMessages {
-			signedClientMessage, _ := NewSigned(clientKeys[c], rawClientMessages[s])
-			clientMsgs = append(clientMsgs, signedClientMessage)
-		}
+		require.NotNil(t, rawClientMessage)
+		signedClientMessage, _ := NewSigned(clientKeys[c], rawClientMessage)
+		clientMsgs = append(clientMsgs, signedClientMessage)
 	}
 
 	require.Len(t, talkingClients, 2, recoveredChunks)
 
 	agg := &AggregatorMessager{Config: config}
-	aggregatedMessages, err := agg.AggregateClientMessages(2, nil, clientMsgs, clientPubkeys)
+	aggregatedMessage, err := agg.AggregateClientMessages(2, nil, clientMsgs, clientPubkeys)
 	require.NoError(t, err)
-	require.Len(t, aggregatedMessages, 3) // one message per server
-	aggregatedMessagesPerServer := make(map[ServerID]*AggregatedClientMessages, 3)
-	for _, msg := range aggregatedMessages {
-		aggregatedMessagesPerServer[msg.ServerID] = msg
-	}
 
 	partialDecryptionMessages := make([]*ServerPartialDecryptionMessage, len(servers))
 	for s := range servers {
 		var err error
-		partialDecryptionMessages[s], err = servers[s].UnblindAggregate(2, aggregatedMessagesPerServer[servers[s].ServerID])
+		partialDecryptionMessages[s], err = servers[s].UnblindAggregate(2, aggregatedMessage)
 		require.NoError(t, err)
 	}
 
@@ -181,8 +159,7 @@ func TestE2E(t *testing.T) {
 	require.NotNil(t, roundOutput)
 
 	foundMsgs := 0
-	nBytesInFieldElement := (config.MessageFieldOrder.BitLen() - 1) / 8
-	for startingIndex := 0; startingIndex < config.MessageSlots*nBytesInFieldElement; startingIndex += nBytesInFieldElement {
+	for startingIndex := 0; startingIndex < config.MessageLength; startingIndex++ {
 		for i := range msgsData {
 			if startingIndex+len(msgsData[i]) <= len(roundOutput.MessageVector) && bytes.Equal(roundOutput.MessageVector[startingIndex:startingIndex+len(msgsData[i])], msgsData[i]) {
 				foundMsgs++
@@ -198,24 +175,14 @@ func TestE2E(t *testing.T) {
 func BenchmarkUnblindAggregate(b *testing.B) {
 	rs := mrand.New(mrand.NewSource(0))
 
-	fieldOrders := []*big.Int{}
-	for _, fBits := range []int{513} {
-		fo, _ := rand.Prime(rand.Reader, fBits)
-		fieldOrders = append(fieldOrders, fo)
-	}
 	nClientBenches := []int{100, 1000}
 	msgSizeBenches := []int{10, 4000 /* 256kB */, 8 * 4000 /* 2MB */}
 
 	sharedSecrets := make(map[string]crypto.SharedKey)
 	userPKs := make([]crypto.PublicKey, slices.Max(nClientBenches))
-	msgVector := make([][]*big.Int, len(fieldOrders))
 
-	for fs := range fieldOrders {
-		msgVector[fs] = make([]*big.Int, slices.Max(msgSizeBenches))
-		for i := range msgVector[fs] {
-			msgVector[fs][i] = new(big.Int).Rand(rs, fieldOrders[fs])
-		}
-	}
+	msgVector := make([]byte, slices.Max(msgSizeBenches))
+	rs.Read(msgVector)
 
 	for i := range userPKs {
 		pubkey, _, _ := crypto.GenerateKeyPair()
@@ -226,37 +193,32 @@ func BenchmarkUnblindAggregate(b *testing.B) {
 	}
 
 	for _, nClients := range nClientBenches {
-		for _, msgVectorSlots := range msgSizeBenches {
-			auctionVector := blind_auction.NewIBFVector(uint32(msgVectorSlots)).EncodeAsFieldElements()
-			for foi, fieldOrder := range fieldOrders {
-				b.Run(fmt.Sprintf("Unblind aggregate clients-%d-msg-%d-field-%d", nClients, msgVectorSlots, fieldOrder.BitLen()), func(b *testing.B) {
+		for _, msgVectorLength := range msgSizeBenches {
+			auctionVector := blind_auction.NewIBFVector(uint32(msgVectorLength)).EncodeAsFieldElements()
+			b.Run(fmt.Sprintf("Unblind aggregate clients-%d-msg-%d", nClients, msgVectorLength), func(b *testing.B) {
 
-					server := &ServerMessager{
-						Config: &ADCNetConfig{
-							AuctionSlots:      10,
-							MessageSlots:      msgVectorSlots,
-							MessageFieldOrder: fieldOrder,
-							MinServers:        2,
-						},
-						ServerID:      1,
-						SharedSecrets: sharedSecrets,
-					}
+				server := &ServerMessager{
+					Config: &ADCNetConfig{
+						AuctionSlots:  10,
+						MessageLength: msgVectorLength,
+					},
+					ServerID:      1,
+					SharedSecrets: sharedSecrets,
+				}
 
-					aggregate := &AggregatedClientMessages{
-						RoundNumber:   1,
-						ServerID:      1,
-						AllServerIds:  []ServerID{1},
-						AuctionVector: auctionVector,
-						MessageVector: msgVector[foi][:msgVectorSlots],
-						UserPKs:       userPKs[:nClients],
-					}
+				aggregate := &AggregatedClientMessages{
+					RoundNumber:   1,
+					AllServerIds:  []ServerID{1},
+					AuctionVector: auctionVector,
+					MessageVector: msgVector[:msgVectorLength],
+					UserPKs:       userPKs[:nClients],
+				}
 
-					for b.Loop() {
-						_, err := server.UnblindAggregate(1, aggregate)
-						require.NoError(b, err)
-					}
-				})
-			}
+				for b.Loop() {
+					_, err := server.UnblindAggregate(1, aggregate)
+					require.NoError(b, err)
+				}
+			})
 		}
 	}
 }
@@ -264,20 +226,17 @@ func BenchmarkUnblindAggregate(b *testing.B) {
 func BenchmarkUnblindMessages(b *testing.B) {
 	rs := mrand.New(mrand.NewSource(0))
 
-	fieldOrder, _ := rand.Prime(rand.Reader, 513)
 	nClientBenches := []int{100, 1000}
-	msgSizeBenches := []int{10, 8 * 4000 /* 2MB */}
+	msgSizeBenches := []int{10 * 64, 8 * 4000 * 64}
 	nServerBenches := []int{2, 4, 10}
 
 	sharedSecrets := make(map[string]crypto.SharedKey)
 	userPKs := make([]crypto.PublicKey, slices.Max(nClientBenches))
-	msgVector := make([][]*big.Int, slices.Max(nServerBenches))
+	msgVector := make([][]byte, slices.Max(nServerBenches))
 
 	for si := range msgVector {
-		msgVector[si] = make([]*big.Int, slices.Max(msgSizeBenches))
-		for i := range msgVector[si] {
-			msgVector[si][i] = new(big.Int).Rand(rs, fieldOrder)
-		}
+		msgVector[si] = make([]byte, slices.Max(msgSizeBenches))
+		rs.Read(msgVector[si])
 	}
 
 	for i := range userPKs {
@@ -288,17 +247,15 @@ func BenchmarkUnblindMessages(b *testing.B) {
 		userPKs[i] = pubkey
 	}
 
-	for _, msgVectorSlots := range msgSizeBenches {
-		auctionVector := blind_auction.NewIBFVector(uint32(msgVectorSlots)).EncodeAsFieldElements()
+	for _, msgVectorLength := range msgSizeBenches {
+		auctionVector := blind_auction.NewIBFVector(uint32(msgVectorLength)).EncodeAsFieldElements()
 		for _, nServers := range nServerBenches {
 			for _, nClients := range nClientBenches {
-				b.Run(fmt.Sprintf("Unblind partial messages servers-%d-clients-%d-msg-%d-field-%d", nServers, nClients, msgVectorSlots, fieldOrder.BitLen()), func(b *testing.B) {
+				b.Run(fmt.Sprintf("Unblind partial messages servers-%d-clients-%d-msg-%d", nServers, nClients, msgVectorLength), func(b *testing.B) {
 
 					config := &ADCNetConfig{
-						AuctionSlots:      10,
-						MessageSlots:      msgVectorSlots,
-						MessageFieldOrder: fieldOrder,
-						MinServers:        uint32(nServers),
+						AuctionSlots:  10,
+						MessageLength: msgVectorLength,
 					}
 
 					pdm := make([]*ServerPartialDecryptionMessage, nServers)
@@ -308,7 +265,7 @@ func BenchmarkUnblindMessages(b *testing.B) {
 							OriginalAggregate: &AggregatedClientMessages{RoundNumber: 1},
 							UserPKs:           userPKs[:nClients],
 							AuctionVector:     auctionVector,
-							MessageVector:     msgVector[i][:msgVectorSlots],
+							MessageVector:     msgVector[i][:msgVectorLength],
 						}
 					}
 

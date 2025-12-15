@@ -23,7 +23,7 @@ type HTTPClient struct {
 	service    *protocol.ClientService
 	roundCoord *protocol.LocalRoundCoordinator
 	registry   *ServiceRegistry
-	httpClient *http.Client
+	HttpClient *http.Client
 
 	signingKey  crypto.PrivateKey
 	exchangeKey *ecdh.PrivateKey
@@ -42,7 +42,7 @@ func NewHTTPClient(config *ServiceConfig, signingKey crypto.PrivateKey, exchange
 		service:     service,
 		roundCoord:  roundCoord,
 		registry:    NewServiceRegistry(),
-		httpClient:  &http.Client{},
+		HttpClient:  &http.Client{},
 		signingKey:  signingKey,
 		exchangeKey: exchangeKey,
 	}, nil
@@ -59,12 +59,8 @@ func (c *HTTPClient) RegisterRoutes(r chi.Router) {
 
 // Start begins the client service.
 func (c *HTTPClient) Start(ctx context.Context) error {
-	// Start round coordinator
 	c.roundCoord.Start(ctx)
-
-	// Subscribe to round transitions
 	go c.handleRoundTransitions(ctx)
-
 	return nil
 }
 
@@ -85,17 +81,18 @@ func (c *HTTPClient) handleRoundTransitions(ctx context.Context) {
 			c.currentRound = round
 			c.service.AdvanceToRound(round)
 
-			// TODO: generate messages here according to some benchmarking strategy
+			// Generate test messages with some probability
 			if rand.Float32() > 0.5 {
-				msg := []byte(fmt.Sprintf("hello adcnet round %d from client %s!", round.Number, c.config.ServiceID))
+				msg := []byte(fmt.Sprintf("hello adcnet round %d from client %s!",
+					round.Number, c.config.ServiceID))
 				c.service.ScheduleMessageForNextRound(msg, 10)
 			}
 
 			c.mu.Unlock()
 
-			// Send messages for this round
 			if err := c.sendRoundMessages(); err != nil {
-				fmt.Printf("Client %s: error sending round %d messages: %v\n", c.config.ServiceID, round.Number, err)
+				fmt.Printf("Client %s: error sending round %d messages: %v\n",
+					c.config.ServiceID, round.Number, err)
 			}
 		}
 	}
@@ -108,7 +105,7 @@ func (c *HTTPClient) sendRoundMessages() error {
 		return fmt.Errorf("get messages: %w", err)
 	}
 
-	req := &ClientMessageRequest{Messages: messages}
+	req := &ClientMessageRequest{Messages: []*protocol.Signed[protocol.ClientRoundMessage]{messages}}
 
 	c.mu.RLock()
 	aggregators := make([]*ServiceEndpoint, 0, len(c.registry.Aggregators))
@@ -122,7 +119,8 @@ func (c *HTTPClient) sendRoundMessages() error {
 		if err := c.sendToAggregator(agg, req); err != nil {
 			return fmt.Errorf("send to aggregator %s: %w", agg.ServiceID, err)
 		}
-		fmt.Printf("%s: sent %d messages for round %d to %s\n", c.config.ServiceID, len(messages), c.currentRound.Number, agg.ServiceID)
+		fmt.Printf("%s: sent message for round %d to %s\n",
+			c.config.ServiceID, c.currentRound.Number, agg.ServiceID)
 	}
 
 	return nil
@@ -135,7 +133,7 @@ func (c *HTTPClient) sendToAggregator(agg *ServiceEndpoint, req *ClientMessageRe
 		return err
 	}
 
-	resp, err := c.httpClient.Post(
+	resp, err := c.HttpClient.Post(
 		fmt.Sprintf("%s/client-messages", agg.HTTPEndpoint),
 		"application/json",
 		bytes.NewReader(body),
@@ -178,7 +176,6 @@ func (c *HTTPClient) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	switch req.ServiceType {
 	case ServerService:
-		// Parse ECDH key and register with protocol service
 		keyBytes, err := hex.DecodeString(req.ExchangeKey)
 		if err != nil {
 			http.Error(w, "invalid exchange key", http.StatusBadRequest)
@@ -191,16 +188,13 @@ func (c *HTTPClient) handleRegister(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Extract server ID from public key
 		serverID := protocol.ServerID(crypto.PublicKeyToServerID(signingPubkey))
-
 		if err := c.service.RegisterServer(serverID, ecdhKey); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
 		fmt.Printf("%s: registered %s\n", c.config.ServiceID, req.ServiceID)
-
 		c.registry.Servers[req.ServiceID] = endpoint
 
 	case AggregatorService:
@@ -215,7 +209,7 @@ func (c *HTTPClient) handleRegister(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(&RegistrationResponse{Success: true})
 }
 
-// handleRoundBroadcast receives round broadcast results.
+// handleRoundBroadcast receives round broadcast results from servers.
 func (c *HTTPClient) handleRoundBroadcast(w http.ResponseWriter, r *http.Request) {
 	var req RoundBroadcastResponse
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -228,7 +222,8 @@ func (c *HTTPClient) handleRoundBroadcast(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	fmt.Printf("%s: processed round %d broadcast\n", c.config.ServiceID, req.Broadcast.RoundNumber)
+	fmt.Printf("%s: processed round %d broadcast\n",
+		c.config.ServiceID, req.Broadcast.RoundNumber)
 
 	w.WriteHeader(http.StatusOK)
 }

@@ -65,28 +65,26 @@ func (s *Signed[T]) Recover() (*T, crypto.PublicKey, error) {
 	return s.Object, s.PublicKey, nil
 }
 
-// ClientRoundMessage contains a client's secret share for one server.
+// ClientRoundMessage contains a client's blinded message and auction data.
 type ClientRoundMessage struct {
 	RoundNumber   int
-	ServerID      ServerID
 	AllServerIds  []ServerID
-	AuctionVector []*big.Int
-	MessageVector []*big.Int
+	AuctionVector []*big.Int // Field-blinded auction IBF elements
+	MessageVector []byte     // XOR-blinded message bytes
 }
 
-// AggregatedClientMessages contains summed shares from multiple clients.
+// AggregatedClientMessages contains combined data from multiple clients.
 type AggregatedClientMessages struct {
 	RoundNumber   int
-	ServerID      ServerID
 	AllServerIds  []ServerID
-	AuctionVector []*big.Int
-	MessageVector []*big.Int
-	UserPKs       []crypto.PublicKey
+	AuctionVector []*big.Int         // Sum of client auction vectors in field
+	MessageVector []byte             // XOR of client message vectors
+	UserPKs       []crypto.PublicKey // Public keys of contributing clients
 }
 
 // UnionInplace adds another aggregate's vectors to this one in-place.
-// Performs field addition for both auction and message vectors.
-func (m *AggregatedClientMessages) UnionInplace(o *AggregatedClientMessages, messageFieldOrder *big.Int) (*AggregatedClientMessages, error) {
+// XORs message vectors and adds auction vectors in the finite field.
+func (m *AggregatedClientMessages) UnionInplace(o *AggregatedClientMessages) (*AggregatedClientMessages, error) {
 	if m.RoundNumber == 0 {
 		m.RoundNumber = o.RoundNumber
 	} else if m.RoundNumber != o.RoundNumber {
@@ -106,10 +104,7 @@ func (m *AggregatedClientMessages) UnionInplace(o *AggregatedClientMessages, mes
 		}
 	}
 	if m.MessageVector == nil {
-		m.MessageVector = make([]*big.Int, len(o.MessageVector))
-		for i := range m.MessageVector {
-			m.MessageVector[i] = big.NewInt(0)
-		}
+		m.MessageVector = make([]byte, len(o.MessageVector))
 	}
 	if m.UserPKs == nil {
 		m.UserPKs = []crypto.PublicKey{}
@@ -118,31 +113,30 @@ func (m *AggregatedClientMessages) UnionInplace(o *AggregatedClientMessages, mes
 	for i := range o.AuctionVector {
 		crypto.FieldAddInplace(m.AuctionVector[i], o.AuctionVector[i], crypto.AuctionFieldOrder)
 	}
-	for i := range o.MessageVector {
-		crypto.FieldAddInplace(m.MessageVector[i], o.MessageVector[i], messageFieldOrder)
-	}
+	crypto.XorInplace(m.MessageVector, o.MessageVector)
 
 	m.UserPKs = append(m.UserPKs, o.UserPKs...)
 
 	return m, nil
 }
 
-// ServerPartialDecryptionMessage contains a server's unblinded share for threshold reconstruction.
+// ServerPartialDecryptionMessage contains a server's blinding contribution.
 type ServerPartialDecryptionMessage struct {
 	ServerID          ServerID
 	OriginalAggregate *AggregatedClientMessages
 	UserPKs           []crypto.PublicKey
-	AuctionVector     []*big.Int
-	MessageVector     []*big.Int
+	AuctionVector     []*big.Int // Server's auction blinding vector
+	MessageVector     []byte     // Server's XOR blinding vector
 }
 
+// Clone creates a deep copy of the message.
 func (m *ServerPartialDecryptionMessage) Clone() *ServerPartialDecryptionMessage {
 	ret := &ServerPartialDecryptionMessage{
 		ServerID:          m.ServerID,
 		OriginalAggregate: m.OriginalAggregate,
 		UserPKs:           make([]crypto.PublicKey, len(m.UserPKs)),
 		AuctionVector:     make([]*big.Int, len(m.AuctionVector)),
-		MessageVector:     make([]*big.Int, len(m.MessageVector)),
+		MessageVector:     make([]byte, len(m.MessageVector)),
 	}
 
 	copy(ret.UserPKs, m.UserPKs)
@@ -150,7 +144,7 @@ func (m *ServerPartialDecryptionMessage) Clone() *ServerPartialDecryptionMessage
 		ret.AuctionVector[i] = new(big.Int).Set(m.AuctionVector[i])
 	}
 	for i := range ret.MessageVector {
-		ret.MessageVector[i] = new(big.Int).Set(m.MessageVector[i])
+		ret.MessageVector[i] = m.MessageVector[i]
 	}
 
 	return ret
@@ -163,6 +157,7 @@ type RoundBroadcast struct {
 	MessageVector []byte
 }
 
+// ClientRegistrationBlob contains client registration information.
 type ClientRegistrationBlob struct {
 	SigningPublicKey  crypto.PublicKey `json:"signing_public_key"`
 	ExchangePublicKey *ecdh.PublicKey  `json:"exchange_public_key"`
@@ -174,7 +169,7 @@ type AggregatorRegistrationBlob struct {
 	Level            uint32           `json:"level"`
 }
 
-// ServerRegistrationBlob registers a server in the anytrust group during setup.
+// ServerRegistrationBlob registers a server in the network during setup.
 type ServerRegistrationBlob struct {
 	SigningPublicKey  crypto.PublicKey `json:"signing_public_key"`
 	ExchangePublicKey *ecdh.PublicKey  `json:"exchange_public_key"`

@@ -37,11 +37,11 @@ func AuctionDataFromChunk(chunk [IBFChunkSize]byte) *AuctionData {
 
 // AuctionDataFromMessage creates auction data binding a message to its bid weight.
 // Used by clients when preparing bids for the next round.
-func AuctionDataFromMessage(msg []byte, weight uint32, bytesToElement int) *AuctionData {
+func AuctionDataFromMessage(msg []byte, weight uint32) *AuctionData {
 	return &AuctionData{
 		MessageHash: sha256.Sum256(msg),
 		Weight:      weight,
-		Size:        uint32((len(msg) + bytesToElement - 1) / bytesToElement), // Size in bytes for bandwidth allocation
+		Size:        uint32(len(msg)),
 	}
 }
 

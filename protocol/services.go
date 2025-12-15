@@ -1,17 +1,17 @@
-// File: protocol/services_updated.go
-// This shows the updates needed to existing services.go file
-
 package protocol
 
 import (
 	"crypto/ecdh"
 	"errors"
+	"slices"
 	"sync"
 
 	blind_auction "github.com/flashbots/adcnet/blind-auction"
 	"github.com/flashbots/adcnet/crypto"
 )
 
+// ServerService manages server-side protocol operations including client registration,
+// aggregate processing, and message reconstruction through XOR unblinding.
 type ServerService struct {
 	config            *ADCNetConfig
 	serverID          ServerID
@@ -26,6 +26,7 @@ type ServerService struct {
 	roundData    *ServerRoundData
 }
 
+// ServerRoundData holds per-round state for message reconstruction.
 type ServerRoundData struct {
 	Round                           int
 	ServerPartialDecryptionMessages map[ServerID]*ServerPartialDecryptionMessage
@@ -33,6 +34,7 @@ type ServerRoundData struct {
 	RoundOutput                     *RoundBroadcast
 }
 
+// NewServerService creates a server service with the given configuration and keys.
 func NewServerService(config *ADCNetConfig, serverId ServerID, serverSigningKey crypto.PrivateKey, serverExchangeKey *ecdh.PrivateKey) *ServerService {
 	s := &ServerService{
 		config:            config,
@@ -46,6 +48,7 @@ func NewServerService(config *ADCNetConfig, serverId ServerID, serverSigningKey 
 	return s
 }
 
+// AdvanceToRound transitions the server to a new protocol round, resetting round state.
 func (s *ServerService) AdvanceToRound(round Round) {
 	s.roundMutex.Lock()
 	defer s.roundMutex.Unlock()
@@ -64,6 +67,7 @@ func (s *ServerService) AdvanceToRound(round Round) {
 	}
 }
 
+// RegisterClient establishes a shared secret with a client via ECDH key exchange.
 func (s *ServerService) RegisterClient(clientPubkey crypto.PublicKey, clientECDHPubkey *ecdh.PublicKey) error {
 	s.secretsMutex.Lock()
 	defer s.secretsMutex.Unlock()
@@ -77,6 +81,7 @@ func (s *ServerService) RegisterClient(clientPubkey crypto.PublicKey, clientECDH
 	return nil
 }
 
+// DeregisterClient removes a client's shared secret from the server.
 func (s *ServerService) DeregisterClient(clientPubkey crypto.PublicKey) error {
 	s.secretsMutex.Lock()
 	defer s.secretsMutex.Unlock()
@@ -85,6 +90,8 @@ func (s *ServerService) DeregisterClient(clientPubkey crypto.PublicKey) error {
 	return nil
 }
 
+// ProcessPartialDecryptionMessage collects partial decryptions from servers.
+// Returns the final broadcast once all servers have contributed their unblinding shares.
 func (s *ServerService) ProcessPartialDecryptionMessage(msg *ServerPartialDecryptionMessage) (*RoundBroadcast, error) {
 	s.roundMutex.Lock()
 	defer s.roundMutex.Unlock()
@@ -98,7 +105,7 @@ func (s *ServerService) ProcessPartialDecryptionMessage(msg *ServerPartialDecryp
 	}
 
 	s.roundData.ServerPartialDecryptionMessages[msg.ServerID] = msg
-	if len(s.roundData.ServerPartialDecryptionMessages) < int(s.config.MinServers) {
+	if len(s.roundData.ServerPartialDecryptionMessages) < int(len(msg.OriginalAggregate.AllServerIds)) {
 		return nil, nil
 	}
 
@@ -117,11 +124,13 @@ func (s *ServerService) ProcessPartialDecryptionMessage(msg *ServerPartialDecryp
 	return roundBroadcast, nil
 }
 
+// ProcessAggregateMessage removes this server's blinding factors from the aggregate.
+// The resulting partial decryption is accumulated and returned for distribution to other servers.
 func (s *ServerService) ProcessAggregateMessage(msg *AggregatedClientMessages) (*ServerPartialDecryptionMessage, error) {
 	s.roundMutex.Lock()
 	defer s.roundMutex.Unlock()
 
-	if msg.ServerID != s.serverID {
+	if !slices.Contains(msg.AllServerIds, s.serverID) {
 		return nil, errors.New("message for invalid server")
 	}
 
@@ -145,11 +154,9 @@ func (s *ServerService) ProcessAggregateMessage(msg *AggregatedClientMessages) (
 			crypto.FieldAddInplace(currentPartialDecryption.AuctionVector[i], additionalPartialDecryption.AuctionVector[i], crypto.AuctionFieldOrder)
 		}
 
-		for i := range currentPartialDecryption.MessageVector {
-			crypto.FieldAddInplace(currentPartialDecryption.MessageVector[i], additionalPartialDecryption.MessageVector[i], s.config.MessageFieldOrder)
-		}
+		crypto.XorInplace(currentPartialDecryption.MessageVector, additionalPartialDecryption.MessageVector)
 
-		currentPartialDecryption.OriginalAggregate.UnionInplace(msg, s.config.MessageFieldOrder)
+		currentPartialDecryption.OriginalAggregate.UnionInplace(msg)
 	}
 
 	s.roundData.ServerPartialDecryptionMessages[s.serverID] = currentPartialDecryption
@@ -157,6 +164,7 @@ func (s *ServerService) ProcessAggregateMessage(msg *AggregatedClientMessages) (
 	return currentPartialDecryption, err
 }
 
+// AggregatorService combines client messages to reduce bandwidth to servers.
 type AggregatorService struct {
 	config *ADCNetConfig
 
@@ -168,11 +176,13 @@ type AggregatorService struct {
 	roundData    *AggregatorRoundData
 }
 
+// AggregatorRoundData holds per-round aggregation state.
 type AggregatorRoundData struct {
-	Round      int
-	Aggregates []*AggregatedClientMessages
+	Round     int
+	Aggregate *AggregatedClientMessages
 }
 
+// NewAggregatorService creates an aggregator service with the given configuration.
 func NewAggregatorService(config *ADCNetConfig) *AggregatorService {
 	a := &AggregatorService{
 		config:            config,
@@ -183,6 +193,7 @@ func NewAggregatorService(config *ADCNetConfig) *AggregatorService {
 	return a
 }
 
+// AdvanceToRound transitions the aggregator to a new protocol round.
 func (a *AggregatorService) AdvanceToRound(round Round) {
 	a.roundMutex.Lock()
 	defer a.roundMutex.Unlock()
@@ -193,11 +204,12 @@ func (a *AggregatorService) AdvanceToRound(round Round) {
 
 	a.currentRound = round.Number
 	a.roundData = &AggregatorRoundData{
-		Round:      a.currentRound,
-		Aggregates: make([]*AggregatedClientMessages, 0),
+		Round:     a.currentRound,
+		Aggregate: nil,
 	}
 }
 
+// RegisterClient authorizes a client to submit messages through this aggregator.
 func (a *AggregatorService) RegisterClient(pubkey crypto.PublicKey) error {
 	a.clientsMutex.Lock()
 	defer a.clientsMutex.Unlock()
@@ -207,6 +219,7 @@ func (a *AggregatorService) RegisterClient(pubkey crypto.PublicKey) error {
 	return nil
 }
 
+// DeregisterClient removes a client's authorization.
 func (a *AggregatorService) DeregisterClient(pubkey crypto.PublicKey) error {
 	a.clientsMutex.Lock()
 	defer a.clientsMutex.Unlock()
@@ -216,7 +229,9 @@ func (a *AggregatorService) DeregisterClient(pubkey crypto.PublicKey) error {
 	return nil
 }
 
-func (a *AggregatorService) ProcessClientMessages(msgs []*Signed[ClientRoundMessage]) ([]*AggregatedClientMessages, error) {
+// ProcessClientMessages verifies and aggregates signed client messages.
+// Message vectors are combined via XOR, auction vectors via field addition.
+func (a *AggregatorService) ProcessClientMessages(msgs []*Signed[ClientRoundMessage]) (*AggregatedClientMessages, error) {
 	a.roundMutex.Lock()
 	defer a.roundMutex.Unlock()
 
@@ -230,27 +245,30 @@ func (a *AggregatorService) ProcessClientMessages(msgs []*Signed[ClientRoundMess
 	defer a.clientsMutex.Unlock()
 
 	for _, msg := range msgs {
-		newAggregate, err := (&AggregatorMessager{Config: a.config}).AggregateClientMessages(a.currentRound, a.roundData.Aggregates, []*Signed[ClientRoundMessage]{msg}, a.authorizedClients)
+		newAggregate, err := (&AggregatorMessager{Config: a.config}).AggregateClientMessages(a.currentRound, a.roundData.Aggregate, []*Signed[ClientRoundMessage]{msg}, a.authorizedClients)
 		if err != nil {
 			return nil, err
 		}
 
-		a.roundData.Aggregates = newAggregate
+		a.roundData.Aggregate = newAggregate
 	}
 
-	return a.roundData.Aggregates, nil
+	return a.roundData.Aggregate, nil
 }
 
-func (a *AggregatorService) CurrentAggregates() []*AggregatedClientMessages {
+// CurrentAggregates returns the current round's aggregate.
+func (a *AggregatorService) CurrentAggregates() *AggregatedClientMessages {
 	a.roundMutex.Lock()
 	defer a.roundMutex.Unlock()
 
 	if a.roundData != nil {
-		return a.roundData.Aggregates
+		return a.roundData.Aggregate
 	}
 	return nil
 }
 
+// ClientService manages client-side protocol operations including server registration,
+// message scheduling, and round message generation with XOR blinding.
 type ClientService struct {
 	config      *ADCNetConfig
 	exchangeKey *ecdh.PrivateKey
@@ -264,13 +282,14 @@ type ClientService struct {
 	roundData    map[int]*ClientRoundData
 }
 
-// ClientRoundData with exported fields
+// ClientRoundData holds per-round client state including scheduled messages and auction bids.
 type ClientRoundData struct {
 	roundOutput      *RoundBroadcast
 	messageScheduled []byte
 	auctionData      *blind_auction.AuctionData
 }
 
+// NewClientService creates a client service with the given configuration and keys.
 func NewClientService(config *ADCNetConfig, signingKey crypto.PrivateKey, exchangeKey *ecdh.PrivateKey) *ClientService {
 	c := &ClientService{
 		config:        config,
@@ -283,6 +302,7 @@ func NewClientService(config *ADCNetConfig, signingKey crypto.PrivateKey, exchan
 	return c
 }
 
+// AdvanceToRound transitions the client to a new protocol round.
 func (c *ClientService) AdvanceToRound(round Round) {
 	c.roundMutex.Lock()
 	defer c.roundMutex.Unlock()
@@ -299,6 +319,7 @@ func (c *ClientService) AdvanceToRound(round Round) {
 	}
 }
 
+// RegisterServer establishes a shared secret with a server via ECDH key exchange.
 func (c *ClientService) RegisterServer(serverId ServerID, serverExchangePubkey *ecdh.PublicKey) error {
 	c.secretsMutex.Lock()
 	defer c.secretsMutex.Unlock()
@@ -312,6 +333,7 @@ func (c *ClientService) RegisterServer(serverId ServerID, serverExchangePubkey *
 	return nil
 }
 
+// DeregisterServer removes a server's shared secret from the client.
 func (c *ClientService) DeregisterServer(serverId ServerID, serverExchangePubkey *ecdh.PublicKey) error {
 	c.secretsMutex.Lock()
 	defer c.secretsMutex.Unlock()
@@ -320,18 +342,21 @@ func (c *ClientService) DeregisterServer(serverId ServerID, serverExchangePubkey
 	return nil
 }
 
-// ScheduleMessageForNextRound schedules a message with bid value.
+// ScheduleMessageForNextRound queues a message with a bid value for the auction.
+// The message will be transmitted if the client wins a slot in the current round's auction.
 func (c *ClientService) ScheduleMessageForNextRound(msg []byte, bidValue uint32) error {
 	c.roundMutex.Lock()
 	defer c.roundMutex.Unlock()
 
 	c.roundData[c.currentRound].messageScheduled = msg
-	c.roundData[c.currentRound].auctionData = blind_auction.AuctionDataFromMessage(msg, bidValue, (c.config.MessageFieldOrder.BitLen()-1)/8)
+	c.roundData[c.currentRound].auctionData = blind_auction.AuctionDataFromMessage(msg, bidValue)
 
 	return nil
 }
 
-func (c *ClientService) MessagesForCurrentRound() ([]*Signed[ClientRoundMessage], bool, error) {
+// MessagesForCurrentRound generates the blinded message for the current round.
+// Returns whether the client won an auction slot and should transmit its message.
+func (c *ClientService) MessagesForCurrentRound() (*Signed[ClientRoundMessage], bool, error) {
 	c.roundMutex.Lock()
 	defer c.roundMutex.Unlock()
 
@@ -342,23 +367,20 @@ func (c *ClientService) MessagesForCurrentRound() ([]*Signed[ClientRoundMessage]
 
 	currentRoundData := c.roundData[c.currentRound]
 
-	msgs, wonAuction, err := (&ClientMessager{Config: c.config, SharedSecrets: c.sharedSecrets}).PrepareMessage(c.currentRound, previousRoundData.roundOutput, previousRoundData.messageScheduled, currentRoundData.auctionData)
+	msg, wonAuction, err := (&ClientMessager{Config: c.config, SharedSecrets: c.sharedSecrets}).PrepareMessage(c.currentRound, previousRoundData.roundOutput, previousRoundData.messageScheduled, currentRoundData.auctionData)
 	if err != nil {
 		return nil, false, err
 	}
 
-	signedMsgs := []*Signed[ClientRoundMessage]{}
-	for _, msg := range msgs {
-		signedMsg, err := NewSigned(c.signingKey, msg)
-		if err != nil {
-			return nil, false, err
-		}
-		signedMsgs = append(signedMsgs, signedMsg)
+	signedMsg, err := NewSigned(c.signingKey, msg)
+	if err != nil {
+		return nil, false, err
 	}
 
-	return signedMsgs, wonAuction, nil
+	return signedMsg, wonAuction, nil
 }
 
+// ProcessRoundBroadcast stores the reconstructed broadcast for determining auction results.
 func (c *ClientService) ProcessRoundBroadcast(rb *RoundBroadcast) error {
 	c.roundMutex.Lock()
 	defer c.roundMutex.Unlock()

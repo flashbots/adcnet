@@ -1,4 +1,4 @@
-package services
+package main
 
 import (
 	"bytes"
@@ -9,12 +9,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math/big"
 	"net/http"
 	"time"
 
 	"github.com/flashbots/adcnet/crypto"
 	"github.com/flashbots/adcnet/protocol"
+	"github.com/flashbots/adcnet/services"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -23,11 +23,10 @@ type OrchestratorConfig struct {
 	NumClients     int
 	NumAggregators int
 	NumServers     int
-	MinServers     int // Threshold for reconstruction
 
-	BasePort      int // Starting port for services
+	BasePort      int
 	RoundDuration time.Duration
-	MessageSlots  int
+	MessageLength int
 	AuctionSlots  uint32
 }
 
@@ -47,20 +46,18 @@ type Orchestrator struct {
 // DeployedService represents a running service instance.
 type DeployedService struct {
 	ServiceID   string
-	ServiceType ServiceType
+	ServiceType services.ServiceType
 	HTTPAddr    string
 	HTTPServer  *http.Server
 
-	// Keys
 	SigningKey     crypto.PrivateKey
 	PublicKey      crypto.PublicKey
 	ExchangeKey    *ecdh.PrivateKey
-	ExchangePubKey []byte // encoded public key
+	ExchangePubKey []byte
 
-	// Service-specific handlers
-	Client     *HTTPClient
-	Aggregator *HTTPAggregator
-	Server     *HTTPServer
+	Client     *services.HTTPClient
+	Aggregator *services.HTTPAggregator
+	Server     *services.HTTPServer
 }
 
 // NewOrchestrator creates a deployment orchestrator.
@@ -68,13 +65,11 @@ func NewOrchestrator(config *OrchestratorConfig) *Orchestrator {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	adcConfig := &protocol.ADCNetConfig{
-		AuctionSlots:      config.AuctionSlots,
-		MessageSlots:      config.MessageSlots,
-		MessageFieldOrder: crypto.MessageFieldOrder,
-		MinServers:        uint32(config.MinServers),
-		MinClients:        uint32(config.NumClients),
-		RoundDuration:     config.RoundDuration,
-		RoundsPerWindow:   10, // Default
+		AuctionSlots:    config.AuctionSlots,
+		MessageLength:   config.MessageLength,
+		MinClients:      uint32(config.NumClients),
+		RoundDuration:   config.RoundDuration,
+		RoundsPerWindow: 10,
 	}
 
 	return &Orchestrator{
@@ -89,22 +84,18 @@ func NewOrchestrator(config *OrchestratorConfig) *Orchestrator {
 func (o *Orchestrator) Deploy() error {
 	fmt.Println("Starting ADCNet deployment...")
 
-	// 1. Deploy servers
 	if err := o.deployServers(); err != nil {
 		return fmt.Errorf("deploy servers: %w", err)
 	}
 
-	// 2. Deploy aggregators
 	if err := o.deployAggregators(); err != nil {
 		return fmt.Errorf("deploy aggregators: %w", err)
 	}
 
-	// 3. Deploy clients
 	if err := o.deployClients(); err != nil {
 		return fmt.Errorf("deploy clients: %w", err)
 	}
 
-	// 4. Register services with each other
 	if err := o.registerServices(); err != nil {
 		return fmt.Errorf("register services: %w", err)
 	}
@@ -120,9 +111,9 @@ func (o *Orchestrator) deployServers() error {
 	for i := 0; i < o.config.NumServers; i++ {
 		service, err := o.deployService(
 			fmt.Sprintf("server-%d", i),
-			ServerService,
+			services.ServerService,
 			o.config.BasePort+i,
-			i == 0, // First server is leader
+			i == 0,
 		)
 		if err != nil {
 			return err
@@ -137,7 +128,7 @@ func (o *Orchestrator) deployAggregators() error {
 	for i := 0; i < o.config.NumAggregators; i++ {
 		service, err := o.deployService(
 			fmt.Sprintf("aggregator-%d", i),
-			AggregatorService,
+			services.AggregatorService,
 			o.config.BasePort+o.config.NumServers+i,
 			false,
 		)
@@ -154,7 +145,7 @@ func (o *Orchestrator) deployClients() error {
 	for i := 0; i < o.config.NumClients; i++ {
 		service, err := o.deployService(
 			fmt.Sprintf("client-%d", i),
-			ClientService,
+			services.ClientService,
 			o.config.BasePort+o.config.NumServers+o.config.NumAggregators+i,
 			false,
 		)
@@ -167,8 +158,7 @@ func (o *Orchestrator) deployClients() error {
 }
 
 // deployService creates and starts a single service instance.
-func (o *Orchestrator) deployService(serviceID string, serviceType ServiceType, port int, isLeader bool) (*DeployedService, error) {
-	// Generate keys
+func (o *Orchestrator) deployService(serviceID string, serviceType services.ServiceType, port int, isLeader bool) (*DeployedService, error) {
 	pubKey, privKey, err := crypto.GenerateKeyPair()
 	if err != nil {
 		return nil, fmt.Errorf("generate keys: %w", err)
@@ -180,7 +170,7 @@ func (o *Orchestrator) deployService(serviceID string, serviceType ServiceType, 
 	}
 
 	addr := fmt.Sprintf("localhost:%d", port)
-	config := &ServiceConfig{
+	config := &services.ServiceConfig{
 		ADCNetConfig:  o.adcConfig,
 		HTTPAddr:      addr,
 		ServiceID:     serviceID,
@@ -198,30 +188,28 @@ func (o *Orchestrator) deployService(serviceID string, serviceType ServiceType, 
 		ExchangePubKey: exchangeKey.PublicKey().Bytes(),
 	}
 
-	// Create router
 	r := chi.NewRouter()
 
-	// Create service-specific handler
 	switch serviceType {
-	case ClientService:
-		client, err := NewHTTPClient(config, privKey, exchangeKey)
+	case services.ClientService:
+		client, err := services.NewHTTPClient(config, privKey, exchangeKey)
 		if err != nil {
 			return nil, err
 		}
 		client.RegisterRoutes(r)
 		service.Client = client
 
-	case AggregatorService:
-		aggregator, err := NewHTTPAggregator(config)
+	case services.AggregatorService:
+		aggregator, err := services.NewHTTPAggregator(config)
 		if err != nil {
 			return nil, err
 		}
 		aggregator.RegisterRoutes(r)
 		service.Aggregator = aggregator
 
-	case ServerService:
+	case services.ServerService:
 		serverID := protocol.ServerID(crypto.PublicKeyToServerID(pubKey))
-		server, err := NewHTTPServer(config, serverID, privKey, exchangeKey, isLeader)
+		server, err := services.NewHTTPServer(config, serverID, privKey, exchangeKey, isLeader)
 		if err != nil {
 			return nil, err
 		}
@@ -229,7 +217,6 @@ func (o *Orchestrator) deployService(serviceID string, serviceType ServiceType, 
 		service.Server = server
 	}
 
-	// Start HTTP server
 	service.HTTPServer = &http.Server{
 		Addr:    addr,
 		Handler: r,
@@ -242,17 +229,15 @@ func (o *Orchestrator) deployService(serviceID string, serviceType ServiceType, 
 		}
 	}()
 
-	// Start service background tasks
 	switch serviceType {
-	case ClientService:
+	case services.ClientService:
 		service.Client.Start(o.ctx)
-	case AggregatorService:
+	case services.AggregatorService:
 		service.Aggregator.Start(o.ctx)
-	case ServerService:
+	case services.ServerService:
 		service.Server.Start(o.ctx)
 	}
 
-	// Wait for server to start
 	time.Sleep(100 * time.Millisecond)
 
 	return service, nil
@@ -260,9 +245,7 @@ func (o *Orchestrator) deployService(serviceID string, serviceType ServiceType, 
 
 // registerServices establishes connections between services.
 func (o *Orchestrator) registerServices() error {
-	// Register clients with servers and aggregators
 	for _, client := range o.clients {
-		// Register with all servers
 		for _, server := range o.servers {
 			if err := o.registerService(client, server); err != nil {
 				return fmt.Errorf("register client %s with server %s: %w",
@@ -274,7 +257,6 @@ func (o *Orchestrator) registerServices() error {
 			}
 		}
 
-		// Register with all aggregators
 		for _, agg := range o.aggregators {
 			if err := o.registerService(client, agg); err != nil {
 				return fmt.Errorf("register client %s with aggregator %s: %w",
@@ -287,7 +269,6 @@ func (o *Orchestrator) registerServices() error {
 		}
 	}
 
-	// Register aggregators with servers
 	for _, agg := range o.aggregators {
 		for _, server := range o.servers {
 			if err := o.registerService(agg, server); err != nil {
@@ -301,7 +282,6 @@ func (o *Orchestrator) registerServices() error {
 		}
 	}
 
-	// Register servers with each other
 	for _, s1 := range o.servers {
 		for _, s2 := range o.servers {
 			if s1.ServiceID != s2.ServiceID {
@@ -318,7 +298,7 @@ func (o *Orchestrator) registerServices() error {
 
 // registerService registers one service with another.
 func (o *Orchestrator) registerService(from, to *DeployedService) error {
-	req := &RegistrationRequest{
+	req := &services.RegistrationRequest{
 		ServiceID:    from.ServiceID,
 		ServiceType:  from.ServiceType,
 		PublicKey:    from.PublicKey.String(),
@@ -326,13 +306,12 @@ func (o *Orchestrator) registerService(from, to *DeployedService) error {
 		HTTPEndpoint: from.HTTPAddr,
 	}
 
-	// Use the client's HTTP client to register
 	if from.Client != nil {
-		return o.postJSON(from.Client.httpClient, to.HTTPAddr+"/register", req)
+		return o.postJSON(from.Client.HttpClient, to.HTTPAddr+"/register", req)
 	} else if from.Aggregator != nil {
-		return o.postJSON(from.Aggregator.httpClient, to.HTTPAddr+"/register", req)
+		return o.postJSON(from.Aggregator.HttpClient, to.HTTPAddr+"/register", req)
 	} else if from.Server != nil {
-		return o.postJSON(from.Server.httpClient, to.HTTPAddr+"/register", req)
+		return o.postJSON(from.Server.HttpClient, to.HTTPAddr+"/register", req)
 	}
 
 	return fmt.Errorf("no HTTP client available")
@@ -363,23 +342,21 @@ func (o *Orchestrator) postJSON(client *http.Client, url string, data interface{
 func (o *Orchestrator) Shutdown() error {
 	fmt.Println("Shutting down deployment...")
 
-	o.cancel() // Cancel context
+	o.cancel()
 
-	// Shutdown all HTTP servers
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	for _, svc := range append(o.clients, append(o.aggregators, o.servers...)...) {
+	allServices := make([]*DeployedService, 0, len(o.clients)+len(o.aggregators)+len(o.servers))
+	allServices = append(allServices, o.clients...)
+	allServices = append(allServices, o.aggregators...)
+	allServices = append(allServices, o.servers...)
+
+	for _, svc := range allServices {
 		if err := svc.HTTPServer.Shutdown(ctx); err != nil {
 			fmt.Printf("Error shutting down %s: %v\n", svc.ServiceID, err)
 		}
 	}
 
 	return nil
-}
-
-// randInt64 generates a random int64 in [0, max).
-func randInt64(max int64) int64 {
-	n, _ := rand.Int(rand.Reader, big.NewInt(max))
-	return n.Int64()
 }

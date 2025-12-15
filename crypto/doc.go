@@ -3,11 +3,11 @@
 // This package implements the core cryptographic operations required for
 // anonymous broadcast protocols, including:
 //
-//   - Field arithmetic for finite field operations
-//   - Polynomial interpolation for secret sharing (Shamir's Secret Sharing)
+//   - Field arithmetic for finite field operations (auction data)
 //   - Key encapsulation mechanisms (X25519) for shared secret derivation
 //   - Digital signatures (Ed25519) for authentication
-//   - Blinding vector generation for privacy-preserving aggregation
+//   - XOR-based blinding vector generation for privacy-preserving message aggregation
+//   - Field-based blinding for auction data aggregation
 //
 // The crypto package provides low-level primitives that are used by higher-level
 // protocol implementations.
@@ -15,14 +15,14 @@
 //
 // # Field Operations
 //
-// The package supports operations in two finite fields:
-//   - MessageFieldOrder: A 513-bit field for encoding 512-bit message chunks
+// The package supports operations in a finite field:
 //   - AuctionFieldOrder: A 384-bit field for auction-related operations
 //
-// # Secret Sharing
+// # Blinding
 //
-// Polynomial-based secret sharing is implemented using Neville interpolation,
-// allowing efficient reconstruction of secrets from threshold shares.
+// Two blinding mechanisms are provided:
+//   - XOR-based blinding for message vectors (DeriveXorBlindingVector)
+//   - Field arithmetic blinding for auction IBF vectors (DeriveBlindingVector)
 //
 // # Key Management
 //
