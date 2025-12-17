@@ -44,6 +44,7 @@ Servers collaborate to reconstruct messages:
 - **IBF-based Scheduling**: Distributed auction mechanism using Invertible Bloom Filters
 - **Dynamic Message Sizing**: Variable-length messages allocated through auction weights
 - **Anonymity Guarantees**: Unlinkability between rounds through fresh blinding
+- **TEE Attestation**: Optional TDX attestation for service verification
 
 ## Protocol Flow
 
@@ -91,21 +92,15 @@ HTTP service implementations with:
 - Central registry for service discovery
 - TEE attestation verification
 - Signed message authentication
+- Admin-authenticated registration for servers/aggregators
 
-## Security Properties
-
-- **Privacy**: Message content hidden unless all servers collude
-- **Anonymity**: Sender identity protected through XOR blinding with all servers
-- **Unlinkability**: Fresh blinding prevents correlation between rounds
-- **Availability**: System requires all servers to participate
-- **Integrity**: Digital signatures authenticate all protocol messages
-
-## Implementation Details
-
-- **Field Order**: 384-bit prime field (48-byte IBF chunks)
-- **Message Blinding**: XOR with PRF-derived one-time pads unique per server/round
-- **Auction Blinding**: Field addition with server-specific blinding vectors
-- **IBF Structure**: 4-level filter with 0.75 shrink factor between levels
+### `cmd`
+Standalone CLI commands:
+- `cmd/registry`: Central registry service
+- `cmd/server`: ADCNet server
+- `cmd/aggregator`: Message aggregator
+- `cmd/client`: ADCNet client
+- `cmd/common`: Shared CLI utilities
 
 ## Getting Started
 
@@ -117,13 +112,101 @@ go get github.com/flashbots/adcnet
 
 ### Running the Demo
 
+The demo orchestrator runs a complete local deployment with automatic service registration:
+
 ```bash
 go run ./services/demo \
   --clients=10 \
   --aggregators=2 \
   --servers=5 \
   --round=10s \
+  --msg-length=512000 \
+  --admin-token="admin:secret"
+```
+
+### Running Standalone Services
+
+For production deployments, run services independently:
+
+#### 1. Start the Registry
+
+```bash
+go run ./cmd/registry \
+  --addr=:8080 \
+  --admin-token="admin:secret" \
+  --measurements-url="https://example.com/measurements.json" \
+  --round=10s \
   --msg-length=512000
+```
+
+#### 2. Start Servers
+
+Servers must be registered by an admin before they can participate:
+
+```bash
+# Start the server (it will wait for admin registration)
+go run ./cmd/server \
+  --addr=:8081 \
+  --registry=http://localhost:8080 \
+  --leader
+```
+
+#### 3. Start Aggregators
+
+Aggregators must also be registered by an admin:
+
+```bash
+go run ./cmd/aggregator \
+  --addr=:8082 \
+  --registry=http://localhost:8080
+```
+
+#### 4. Start Clients
+
+Clients self-register via the public endpoint:
+
+```bash
+go run ./cmd/client \
+  --addr=:8083 \
+  --registry=http://localhost:8080
+```
+
+### Service Registration
+
+The registry provides two registration paths:
+
+| Endpoint | Auth Required | Service Types |
+|----------|---------------|---------------|
+| `POST /register/client` | No | Clients only |
+| `POST /admin/register/{type}` | Yes (Basic Auth) | Servers, Aggregators |
+
+When `--admin-token` is configured, servers and aggregators must be registered through the admin endpoint with basic authentication.
+
+### TDX Attestation
+
+Enable TDX attestation for production deployments:
+
+```bash
+# Local TDX device
+go run ./cmd/server --tdx --registry=http://localhost:8080
+
+# Remote TDX attestation service
+go run ./cmd/server \
+  --tdx \
+  --tdx-url=http://attestation-service:8080 \
+  --registry=http://localhost:8080
+```
+
+### Measurements Configuration
+
+Measurements define acceptable TEE configurations:
+
+```bash
+# Remote measurements (production)
+--measurements-url="https://example.com/measurements.json"
+
+# Demo mode uses static measurements compatible with dummy attestation
+# (no flag needed - this is the default in demo)
 ```
 
 ### Basic Usage
@@ -147,6 +230,24 @@ client.RegisterServer(serverID, serverExchangePubkey)
 client.ScheduleMessageForNextRound([]byte("hello"), 10)
 ```
 
+## Security Properties
+
+- **Privacy**: Message content hidden unless all servers collude
+- **Anonymity**: Sender identity protected through XOR blinding with all servers
+- **Unlinkability**: Fresh blinding prevents correlation between rounds
+- **Availability**: System requires all servers to participate
+- **Integrity**: Digital signatures authenticate all protocol messages
+- **Attestation**: Optional TEE verification for service identity
+
+## Implementation Details
+
+- **Field Order**: 384-bit prime field (48-byte IBF chunks)
+- **Message Blinding**: XOR with PRF-derived one-time pads unique per server/round
+- **Auction Blinding**: Field addition with server-specific blinding vectors
+- **IBF Structure**: 4-level filter with 0.75 shrink factor between levels
+- **Signatures**: Ed25519 for all protocol messages
+- **Key Exchange**: ECDH P-256 for shared secret derivation
+
 ## Testing
 
 ```bash
@@ -167,6 +268,7 @@ go test -bench=. ./protocol
 - Synchronous rounds assumed
 - Not all cryptographic operations are constant-time (field arithmetic)
 - **All servers must be online** for message recovery
+- Admin credentials should be securely managed in production
 
 ## License
 

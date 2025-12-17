@@ -2,6 +2,7 @@ package services
 
 import (
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -28,6 +29,9 @@ type Measurements map[int][]byte
 type RegistryConfig struct {
 	MeasurementSource   MeasurementSource
 	AttestationProvider TEEProvider
+	// AdminToken requires basic auth for admin operations when set.
+	// Format: "username:password". Empty string disables authentication.
+	AdminToken string
 }
 
 // Registry manages service discovery and registration for ADCNet components.
@@ -52,25 +56,74 @@ func NewRegistry(config *RegistryConfig, adcConfig *protocol.ADCNetConfig) *Regi
 	}
 }
 
+// basicAuthMiddleware returns middleware that requires basic auth for admin operations.
+func (r *Registry) basicAuthMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if r.config == nil || r.config.AdminToken == "" {
+			next.ServeHTTP(w, req)
+			return
+		}
+
+		user, pass, ok := req.BasicAuth()
+		if !ok {
+			w.Header().Set("WWW-Authenticate", `Basic realm="ADCNet Registry"`)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		expectedHash := sha256.Sum256([]byte(r.config.AdminToken))
+		actualHash := sha256.Sum256([]byte(user + ":" + pass))
+
+		if subtle.ConstantTimeCompare(expectedHash[:], actualHash[:]) != 1 {
+			w.Header().Set("WWW-Authenticate", `Basic realm="ADCNet Registry"`)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		next.ServeHTTP(w, req)
+	})
+}
+
 func (r *Registry) RegisterAdminRoutes(router chi.Router) {
-	router.Post("/register/{service_type}", r.handleRegister)
-	router.Delete("/unregister/{public_key}", r.handleUnregister)
+	router.Group(func(admin chi.Router) {
+		admin.Use(r.basicAuthMiddleware)
+		admin.Post("/admin/register/{service_type}", r.handleAdminRegister)
+		admin.Delete("/admin/unregister/{public_key}", r.handleUnregister)
+	})
 }
 
 func (r *Registry) RegisterPublicRoutes(router chi.Router) {
 	router.Post("/register/{service_type}", r.handleRegisterPublic)
-	// router.Delete("/unregister/client", r.handleUnregisterPublic)
 	router.Get("/services", r.handleGetServices)
 	router.Get("/services/{type}", r.handleGetServicesByType)
 	router.Get("/config", r.handleGetConfig)
+	router.Get("/health", func(w http.ResponseWriter, req *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	})
 }
 
+// handleAdminRegister handles authenticated registration for servers and aggregators.
+func (r *Registry) handleAdminRegister(w http.ResponseWriter, req *http.Request) {
+	r.handleRegister(w, req, false)
+}
+
+// handleRegisterPublic handles public registration (clients only when admin auth is configured).
 func (r *Registry) handleRegisterPublic(w http.ResponseWriter, req *http.Request) {
-	// TODO: public access should only be able to register clients, and possibly aggregators until liveness issues are addressed
-	r.handleRegister(w, req)
+	serviceType := ServiceType(chi.URLParam(req, "service_type"))
+
+	// If admin auth is configured, only allow client registration through public endpoint
+	if r.config != nil && r.config.AdminToken != "" {
+		if serviceType != ClientService {
+			http.Error(w, "use /admin/register for servers and aggregators", http.StatusForbidden)
+			return
+		}
+	}
+
+	r.handleRegister(w, req, true)
 }
 
-func (r *Registry) handleRegister(w http.ResponseWriter, req *http.Request) {
+func (r *Registry) handleRegister(w http.ResponseWriter, req *http.Request, isPublic bool) {
 	serviceType := ServiceType(chi.URLParam(req, "service_type"))
 	if !serviceType.Valid() {
 		http.Error(w, "invalid service type", http.StatusBadRequest)

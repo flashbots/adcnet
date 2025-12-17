@@ -15,6 +15,9 @@ type ServiceConfig struct {
 	HTTPAddr                  string
 	ServiceType               ServiceType
 	RegistryURL               string
+	// SelfRegister enables automatic registration with the registry on start.
+	// Clients typically self-register; servers and aggregators are registered by an admin.
+	SelfRegister bool
 }
 
 // ServiceType identifies the type of service.

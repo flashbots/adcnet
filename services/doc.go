@@ -1,4 +1,3 @@
-// src_services_doc.go
 /*
 Package services provides HTTP-based implementations of ADCNet protocol
 components with centralized service discovery and attestation verification.
@@ -18,37 +17,61 @@ central registry for service discovery:
 
 ## Registry
 
-The central Registry manages service discovery and registration. Services
-register themselves with the registry and periodically poll for new peers.
-Services are keyed by their public key.
+The central Registry manages service discovery and registration. Services are
+keyed by their public key. The registry supports admin authentication for
+registering infrastructure services (servers, aggregators).
 
-Endpoints:
-  - POST /register/{service_type} - Register a service with signed request and attestation
-  - DELETE /unregister/{public_key} - Remove a service
+Public Endpoints:
+  - POST /register/client - Register a client (self-registration, no auth)
   - GET /services - List all registered services
   - GET /services/{type} - List services by type
   - GET /config - Get protocol configuration
+  - GET /health - Health check endpoint
+
+Admin Endpoints (require basic auth when AdminToken is configured):
+  - POST /admin/register/{service_type} - Register servers and aggregators
+  - DELETE /admin/unregister/{public_key} - Remove a service
 
 ## HTTP Services
 
 HTTPClient wraps protocol.ClientService with registry integration.
+Clients self-register on startup via the public endpoint.
 Endpoints: POST /exchange, POST /round-broadcast.
 
 HTTPAggregator wraps protocol.AggregatorService with registry integration.
+Aggregators must be registered by an admin before they can participate.
 Endpoints: POST /exchange, POST /client-messages, POST /aggregate-messages,
 GET /aggregates/{round}.
 
 HTTPServer wraps protocol.ServerService with registry integration.
+Servers must be registered by an admin before they can participate.
 Endpoints: POST /exchange, POST /aggregate, POST /partial-decryption,
 GET /round-broadcast/{round}.
 
+## Measurement Sources
+
+MeasurementSource provides expected TEE measurements for attestation verification:
+  - StaticMeasurementSource: Predefined measurements for testing/demo
+  - RemoteMeasurementSource: Fetches measurements from a URL with caching
+  - DemoMeasurementSource(): Factory for dummy attestation compatibility
+
+## Service Configuration
+
+ServiceConfig controls service behavior:
+  - ADCNetConfig: Protocol parameters (round duration, message length, etc.)
+  - AttestationProvider: TEE provider for generating/verifying attestations
+  - AllowedMeasurementsSource: Expected measurements for peer verification
+  - RegistryURL: Central registry for service discovery
+  - SelfRegister: Whether to auto-register on start (true for clients)
+
 ## Service Lifecycle
 
- 1. Registry starts and exposes discovery endpoints
- 2. Services register with signed requests and attestation
- 3. Services poll registry for peer discovery
- 4. During discovery, attestation is verified before adding to local registry
- 5. Secret exchange uses signed requests, verified against local registry
+ 1. Registry starts with optional admin authentication configured
+ 2. Admin registers servers and aggregators via authenticated endpoint
+ 3. Servers and aggregators start, begin discovery polling
+ 4. Clients start and self-register via public endpoint
+ 5. During discovery, attestation is verified before adding peers to local cache
+ 6. Secret exchange uses signed requests, verified against local registry
 
 # Message Flow
 
@@ -68,29 +91,31 @@ All messages are signed and verified:
   - ServiceRegistrationRequest: Signed by registrant, verified by registry
   - SecretExchangeRequest: Signed by requester, verified against attested registry
   - ClientRoundMessage: Signed by client, verified by aggregator
-  - AggregatedClientMessages: Signed by aggregator, verified by server and
-    other aggregators in hierarchical aggregation
+  - AggregatedClientMessages: Signed by aggregator, verified by servers
   - ServerPartialDecryptionMessage: Signed by server, verified by other servers
-  - RoundBroadcast: Signed by server, verified by clients
+  - RoundBroadcast: Signed by leader server, verified by clients
 
 Attestation verification occurs during service discovery. All protocol messages
 are verified against attested keys stored in the local registry.
 
 # Security Notes
 
-  - Uses Ed25519 for signatures
-  - ECDH P-256 for key exchange
+  - Ed25519 for all digital signatures
+  - ECDH P-256 for key exchange and shared secret derivation
   - XOR-based one-time pad blinding per round
   - Attestation verification during service discovery
   - All messages signed and verified against attested registry
   - Registration requests signed to prove key ownership
   - Requires ALL servers to participate for message recovery
+  - Basic auth protects admin registration of servers and aggregators
+  - Constant-time comparison for admin token verification
 
 # Performance
 
   - Aggregators reduce server bandwidth by O(NumClients)
   - Parallel HTTP requests for efficiency
   - Configurable round duration for throughput tuning
-  - Periodic discovery polling (configurable interval)
+  - Periodic discovery polling (default: 5 second interval)
+  - Measurement source caches results for 1 hour
 */
 package services
