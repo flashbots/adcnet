@@ -61,6 +61,7 @@ func (s *HTTPServer) RegisterRoutes(r chi.Router) {
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 
+	r.Get("/registration-data", s.handleRegistrationData)
 	r.Post("/exchange", s.handleSecretExchange)
 	r.Post("/aggregate", s.handleAggregate)
 	r.Post("/partial-decryption", s.handlePartialDecryption)
@@ -78,6 +79,15 @@ func (s *HTTPServer) Start(ctx context.Context) error {
 	go s.runDiscoveryLoop(ctx, s)
 
 	return nil
+}
+
+func (s *HTTPServer) handleRegistrationData(w http.ResponseWriter, r *http.Request) {
+	data, err := s.baseService.RegistrationData()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	json.NewEncoder(w).Encode(data)
 }
 
 func (s *HTTPServer) selfPublicKey() string {

@@ -7,7 +7,8 @@
 //   - Multiple clients that send random messages
 //
 // The orchestrator handles service registration automatically:
-//   - Servers and aggregators are registered via the admin endpoint
+//   - Servers and aggregators expose /registration-data endpoints
+//   - Orchestrator fetches signed registration data and forwards to registry
 //   - Clients self-register via the public endpoint
 //
 // # Usage

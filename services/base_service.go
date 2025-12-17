@@ -258,3 +258,18 @@ func (b *baseService) sendSignedSecretExchange(endpoint string, serviceType Serv
 	resp.Body.Close()
 	return nil
 }
+
+// RegistrationData returns the service's signed and attested registration request.
+// The registration data is generated and signed by this service, ensuring the
+// attestation originates from the service's own TEE.
+func (b *baseService) RegistrationData() (*protocol.Signed[ServiceRegistrationRequest], error) {
+	pubKey := b.publicKey()
+	req := &ServiceRegistrationRequest{
+		ServiceType:  b.config.ServiceType,
+		PublicKey:    pubKey.String(),
+		ExchangeKey:  hex.EncodeToString(b.exchangeKey.PublicKey().Bytes()),
+		HTTPEndpoint: fmt.Sprintf("http://%s", b.config.HTTPAddr),
+		Attestation:  b.attestation,
+	}
+	return protocol.NewSigned(b.signingKey, req)
+}
