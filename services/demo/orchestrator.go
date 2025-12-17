@@ -5,8 +5,6 @@ import (
 	"context"
 	"crypto/ecdh"
 	"crypto/rand"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -352,29 +350,26 @@ func (o *Orchestrator) deployService(serviceID string, serviceType services.Serv
 	return service, nil
 }
 
-// registerServiceAsAdmin registers a server or aggregator using admin authentication.
+// registerServiceAsAdmin fetches registration data from the service and forwards it to the registry.
 func (o *Orchestrator) registerServiceAsAdmin(svc *DeployedService) error {
-	req := &services.ServiceRegistrationRequest{
-		ServiceType:  svc.ServiceType,
-		PublicKey:    svc.PublicKey.String(),
-		ExchangeKey:  hex.EncodeToString(svc.ExchangePubKey),
-		HTTPEndpoint: svc.HTTPAddr,
-	}
-
-	// Generate attestation
-	attestation, err := services.AttestServiceRegistration(o.attestationProvider, req)
+	// Fetch signed and attested registration data from the service itself
+	resp, err := o.httpClient.Get(svc.HTTPAddr + "/registration-data")
 	if err != nil {
-		return fmt.Errorf("attestation failed: %w", err)
+		return fmt.Errorf("fetch registration data: %w", err)
 	}
-	req.Attestation = attestation
+	defer resp.Body.Close()
 
-	signedReq, err := protocol.NewSigned(svc.SigningKey, req)
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("fetch registration data failed (%d): %s", resp.StatusCode, body)
+	}
+
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("signing failed: %w", err)
+		return fmt.Errorf("read registration data: %w", err)
 	}
 
-	body, _ := json.Marshal(signedReq)
-
+	// Forward to registry admin endpoint
 	url := fmt.Sprintf("%s/admin/register/%s", o.registryURL, svc.ServiceType)
 	httpReq, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
@@ -383,20 +378,19 @@ func (o *Orchestrator) registerServiceAsAdmin(svc *DeployedService) error {
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	if o.config.AdminToken != "" {
-		// Parse "user:pass" format
 		user, pass := parseAdminToken(o.config.AdminToken)
 		httpReq.SetBasicAuth(user, pass)
 	}
 
-	resp, err := o.httpClient.Do(httpReq)
+	adminResp, err := o.httpClient.Do(httpReq)
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer adminResp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("registration failed (%d): %s", resp.StatusCode, string(respBody))
+	if adminResp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(adminResp.Body)
+		return fmt.Errorf("registration failed (%d): %s", adminResp.StatusCode, string(respBody))
 	}
 
 	return nil

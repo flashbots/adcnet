@@ -6,10 +6,10 @@
 //
 // # Registration
 //
-// Aggregators do not self-register. An administrator must register the
-// aggregator via the registry's admin endpoint before it can participate.
-// The aggregator outputs its public key and exchange key on startup for
-// use in registration.
+// Aggregators expose a GET /registration-data endpoint that returns signed and
+// attested registration data. An administrator fetches this data and forwards
+// it to the registry's admin endpoint. This ensures the attestation originates
+// from the aggregator's own TEE.
 //
 // # Usage
 //
@@ -115,7 +115,7 @@ func main() {
 
 	go func() {
 		fmt.Printf("Aggregator listening on %s\n", *addr)
-		fmt.Println("Note: Aggregator must be registered by an admin before it can participate")
+		fmt.Println("Registration data available at GET /registration-data")
 		if err := httpServer.ListenAndServe(); err != http.ErrServerClosed {
 			fmt.Printf("Server error: %v\n", err)
 			os.Exit(1)

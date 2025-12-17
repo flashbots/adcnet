@@ -41,6 +41,7 @@ func (a *HTTPAggregator) RegisterRoutes(r chi.Router) {
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 
+	r.Get("/registration-data", a.handleRegistrationData)
 	r.Post("/exchange", a.handleSecretExchange)
 	r.Post("/client-messages", a.handleClientMessages)
 	r.Post("/aggregate-messages", a.handleAggregateMessages)
@@ -58,6 +59,15 @@ func (a *HTTPAggregator) Start(ctx context.Context) error {
 	go a.runDiscoveryLoop(ctx, a)
 
 	return nil
+}
+
+func (a *HTTPAggregator) handleRegistrationData(w http.ResponseWriter, r *http.Request) {
+	data, err := a.baseService.RegistrationData()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	json.NewEncoder(w).Encode(data)
 }
 
 func (a *HTTPAggregator) selfPublicKey() string {

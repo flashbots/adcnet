@@ -40,13 +40,13 @@ Endpoints: POST /exchange, POST /round-broadcast.
 
 HTTPAggregator wraps protocol.AggregatorService with registry integration.
 Aggregators must be registered by an admin before they can participate.
-Endpoints: POST /exchange, POST /client-messages, POST /aggregate-messages,
-GET /aggregates/{round}.
+Endpoints: GET /registration-data, POST /exchange, POST /client-messages,
+POST /aggregate-messages, GET /aggregates/{round}.
 
 HTTPServer wraps protocol.ServerService with registry integration.
 Servers must be registered by an admin before they can participate.
-Endpoints: POST /exchange, POST /aggregate, POST /partial-decryption,
-GET /round-broadcast/{round}.
+Endpoints: GET /registration-data, POST /exchange, POST /aggregate,
+POST /partial-decryption, GET /round-broadcast/{round}.
 
 ## Measurement Sources
 
@@ -67,11 +67,12 @@ ServiceConfig controls service behavior:
 ## Service Lifecycle
 
  1. Registry starts with optional admin authentication configured
- 2. Admin registers servers and aggregators via authenticated endpoint
- 3. Servers and aggregators start, begin discovery polling
- 4. Clients start and self-register via public endpoint
- 5. During discovery, attestation is verified before adding peers to local cache
- 6. Secret exchange uses signed requests, verified against local registry
+ 2. Servers and aggregators start, exposing GET /registration-data
+ 3. Admin fetches signed registration data from each service and forwards to registry
+ 4. Services begin discovery polling after registration
+ 5. Clients start and self-register via public endpoint
+ 6. During discovery, attestation is verified before adding peers to local cache
+ 7. Secret exchange uses signed requests, verified against local registry
 
 # Message Flow
 
@@ -105,7 +106,8 @@ are verified against attested keys stored in the local registry.
   - XOR-based one-time pad blinding per round
   - Attestation verification during service discovery
   - All messages signed and verified against attested registry
-  - Registration requests signed to prove key ownership
+  - Registration data self-signed and attested by each service's TEE
+  - Admin forwards pre-signed registration data without modification
   - Requires ALL servers to participate for message recovery
   - Basic auth protects admin registration of servers and aggregators
   - Constant-time comparison for admin token verification

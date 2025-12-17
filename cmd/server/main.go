@@ -6,10 +6,10 @@
 //
 // # Registration
 //
-// Servers do not self-register. An administrator must register the server
-// via the registry's admin endpoint before the server can participate in
-// the protocol. The server outputs its public key and exchange key on startup
-// for use in registration.
+// Servers expose a GET /registration-data endpoint that returns signed and
+// attested registration data. An administrator fetches this data and forwards
+// it to the registry's admin endpoint. This ensures the attestation originates
+// from the server's own TEE.
 //
 // # Leader Election
 //
@@ -125,7 +125,7 @@ func main() {
 
 	go func() {
 		fmt.Printf("Server listening on %s (leader=%v)\n", *addr, *isLeader)
-		fmt.Println("Note: Server must be registered by an admin before it can participate")
+		fmt.Println("Registration data available at GET /registration-data")
 		if err := httpServer.ListenAndServe(); err != http.ErrServerClosed {
 			fmt.Printf("Server error: %v\n", err)
 			os.Exit(1)
