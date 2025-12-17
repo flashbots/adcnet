@@ -5,6 +5,7 @@ go 1.24
 require (
 	github.com/flashbots/go-utils v0.6.1-0.20240610084140-4461ab748667
 	github.com/go-chi/chi/v5 v5.0.12
+	github.com/google/go-tdx-guest v0.3.1
 	github.com/google/uuid v1.6.0
 	github.com/prometheus/client_golang v1.19.1
 	github.com/stretchr/testify v1.9.0
@@ -25,6 +26,8 @@ require (
 	github.com/ethereum/go-ethereum v1.13.14 // indirect
 	github.com/go-logr/logr v1.3.0 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
+	github.com/google/go-configfs-tsm v0.2.2 // indirect
+	github.com/google/logger v1.1.1 // indirect
 	github.com/holiman/uint256 v1.2.4 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/prometheus/client_model v0.5.0 // indirect

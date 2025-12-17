@@ -1,0 +1,147 @@
+package services
+
+import (
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"time"
+)
+
+// PublishedMeasurements contains attestation measurements for released builds.
+// Fetched from a public URL and used for client-side attestation verification.
+//
+// JSON format:
+//
+//	[
+//	  {
+//	    "measurement_id": "adcnet-v0.0.1-tdx-abc123...",
+//	    "measurements": {
+//	      0: {"expected": "hex-encoded-mrtd..."},
+//	      1: {"expected": "hex-encoded-rtmr0..."},
+//	      2: {"expected": "hex-encoded-rtmr1..."}
+//	      3: {"expected": "hex-encoded-rtmr2..."}
+//	    }
+//	  },
+//	  {
+//	    "measurement_id": "adcnet-v0.0.2-tdx-def456...",
+//	    "measurements": {
+//	      0: {"expected": "hex-encoded-mrtd..."},
+//	      1: {"expected": "hex-encoded-rtmr0..."},
+//	      2: {"expected": "hex-encoded-rtmr1..."}
+//	      3: {"expected": "hex-encoded-rtmr2..."}
+//	    }
+//	  }
+//	]
+//
+// The file is an array of MeasurementEntry objects. Each entry represents
+// an acceptable build. Keys in "measurements" are register indices as strings
+// (e.g., "0" for MrTd, "1"-"4" for RTMRs, or platform-specific indices).
+// A service is accepted if its attestation matches any entry in the array.
+type PublishedMeasurements []MeasurementEntry
+
+// MeasurementEntry represents a single acceptable build configuration.
+type MeasurementEntry struct {
+	MeasurementID string                   `json:"measurement_id"`
+	Measurements  map[int]MeasurementValue `json:"measurements"`
+}
+
+// MeasurementValue holds an expected measurement value.
+type MeasurementValue struct {
+	Expected string `json:"expected"`
+}
+
+// ToMeasurements converts a MeasurementEntry to the internal format.
+func (e *MeasurementEntry) ToMeasurements() (Measurements, error) {
+	result := make(Measurements)
+	for idx, mv := range e.Measurements {
+		val, err := hex.DecodeString(mv.Expected)
+		if err != nil {
+			return nil, fmt.Errorf("invalid hex for index %d: %w", idx, err)
+		}
+		result[idx] = val
+	}
+	return result, nil
+}
+
+// MeasurementSource provides expected measurements for attestation verification.
+type MeasurementSource interface {
+	// GetAllowedMeasurements returns all acceptable measurement sets.
+	GetAllowedMeasurements() (PublishedMeasurements, error)
+}
+
+// RemoteMeasurementSource fetches measurements from a URL.
+type RemoteMeasurementSource struct {
+	URL        string
+	HTTPClient *http.Client
+
+	cacheTimeout time.Time
+	cached       PublishedMeasurements
+}
+
+// NewRemoteMeasurementSource creates a source that fetches from a URL.
+func NewRemoteMeasurementSource(url string) *RemoteMeasurementSource {
+	return &RemoteMeasurementSource{
+		URL:        url,
+		HTTPClient: &http.Client{Timeout: 30 * time.Second},
+	}
+}
+
+// GetAllowedMeasurements fetches and returns all acceptable measurement sets.
+func (r *RemoteMeasurementSource) GetAllowedMeasurements() (PublishedMeasurements, error) {
+	if r.cached != nil && !r.cacheTimeout.After(time.Now()) {
+		return r.cached, nil
+	}
+
+	published, err := r.fetchMeasurements()
+	if err != nil {
+		return nil, err
+	}
+
+	r.cached = published
+	r.cacheTimeout = time.Now().Add(time.Hour)
+	return published, nil
+}
+
+func (r *RemoteMeasurementSource) fetchMeasurements() (PublishedMeasurements, error) {
+	resp, err := r.HTTPClient.Get(r.URL)
+	if err != nil {
+		return nil, fmt.Errorf("fetching measurements: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("measurements returned %d: %s", resp.StatusCode, body)
+	}
+
+	var pub PublishedMeasurements
+	if err := json.NewDecoder(resp.Body).Decode(&pub); err != nil {
+		return nil, fmt.Errorf("decoding measurements: %w", err)
+	}
+
+	return pub, nil
+}
+
+func VerifyMeasurementsMatch(
+	publishedAllowedMeasurements PublishedMeasurements,
+	actualMeasurements Measurements,
+) (MeasurementEntry, error) {
+	for _, entry := range publishedAllowedMeasurements {
+		for idx, expectedVal := range entry.Measurements {
+			actualVal, ok := actualMeasurements[idx]
+			if !ok {
+				continue
+			}
+			if expectedVal.Expected != hex.EncodeToString(actualVal) {
+				continue
+			}
+		}
+
+		return entry, nil
+	}
+
+	return MeasurementEntry{}, errors.New("measurements do not match any allowed set")
+}
