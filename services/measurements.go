@@ -24,21 +24,11 @@ import (
 //	      2: {"expected": "hex-encoded-rtmr1..."}
 //	      3: {"expected": "hex-encoded-rtmr2..."}
 //	    }
-//	  },
-//	  {
-//	    "measurement_id": "adcnet-v0.0.2-tdx-def456...",
-//	    "measurements": {
-//	      0: {"expected": "hex-encoded-mrtd..."},
-//	      1: {"expected": "hex-encoded-rtmr0..."},
-//	      2: {"expected": "hex-encoded-rtmr1..."}
-//	      3: {"expected": "hex-encoded-rtmr2..."}
-//	    }
 //	  }
 //	]
 //
 // The file is an array of MeasurementEntry objects. Each entry represents
-// an acceptable build. Keys in "measurements" are register indices as strings
-// (e.g., "0" for MrTd, "1"-"4" for RTMRs, or platform-specific indices).
+// an acceptable build. Keys in "measurements" are register indices.
 // A service is accepted if its attestation matches any entry in the array.
 type PublishedMeasurements []MeasurementEntry
 
@@ -72,6 +62,41 @@ type MeasurementSource interface {
 	GetAllowedMeasurements() (PublishedMeasurements, error)
 }
 
+// StaticMeasurementSource provides measurements from a static configuration.
+// Useful for testing and demo deployments where TEE measurements are known
+// in advance or when using dummy attestation.
+type StaticMeasurementSource struct {
+	Measurements PublishedMeasurements
+}
+
+// NewStaticMeasurementSource creates a source with predefined measurements.
+func NewStaticMeasurementSource(measurements PublishedMeasurements) *StaticMeasurementSource {
+	return &StaticMeasurementSource{Measurements: measurements}
+}
+
+// DemoMeasurementSource returns a MeasurementSource that accepts dummy attestations.
+// The returned measurements match the values produced by tdx.DummyProvider.
+// Only use in demo/testing environments.
+func DemoMeasurementSource() *StaticMeasurementSource {
+	return NewStaticMeasurementSource(PublishedMeasurements{
+		{
+			MeasurementID: "demo-dummy-attestation",
+			Measurements: map[int]MeasurementValue{
+				0: {Expected: "00"},
+				1: {Expected: "01"},
+				2: {Expected: "02"},
+				3: {Expected: "03"},
+				4: {Expected: "04"},
+			},
+		},
+	})
+}
+
+// GetAllowedMeasurements returns the static measurement sets.
+func (s *StaticMeasurementSource) GetAllowedMeasurements() (PublishedMeasurements, error) {
+	return s.Measurements, nil
+}
+
 // RemoteMeasurementSource fetches measurements from a URL.
 type RemoteMeasurementSource struct {
 	URL        string
@@ -91,7 +116,7 @@ func NewRemoteMeasurementSource(url string) *RemoteMeasurementSource {
 
 // GetAllowedMeasurements fetches and returns all acceptable measurement sets.
 func (r *RemoteMeasurementSource) GetAllowedMeasurements() (PublishedMeasurements, error) {
-	if r.cached != nil && !r.cacheTimeout.After(time.Now()) {
+	if r.cached != nil && time.Now().Before(r.cacheTimeout) {
 		return r.cached, nil
 	}
 
@@ -130,17 +155,21 @@ func VerifyMeasurementsMatch(
 	actualMeasurements Measurements,
 ) (MeasurementEntry, error) {
 	for _, entry := range publishedAllowedMeasurements {
+		matches := true
 		for idx, expectedVal := range entry.Measurements {
 			actualVal, ok := actualMeasurements[idx]
 			if !ok {
-				continue
+				matches = false
+				break
 			}
 			if expectedVal.Expected != hex.EncodeToString(actualVal) {
-				continue
+				matches = false
+				break
 			}
 		}
-
-		return entry, nil
+		if matches {
+			return entry, nil
+		}
 	}
 
 	return MeasurementEntry{}, errors.New("measurements do not match any allowed set")

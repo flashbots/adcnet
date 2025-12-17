@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdh"
 	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"sync"
 	"time"
@@ -33,6 +37,11 @@ type OrchestratorConfig struct {
 	UseTDX bool
 	// RemoteTDXURL is the URL for remote TDX attestation service.
 	RemoteTDXURL string
+	// MeasurementsURL is the URL for fetching allowed measurements.
+	// If empty, uses demo static measurements.
+	MeasurementsURL string
+	// AdminToken is the basic auth token for admin operations (user:pass).
+	AdminToken string
 }
 
 // RoundOutput captures the broadcast result for a round.
@@ -48,16 +57,17 @@ type Orchestrator struct {
 	config              *OrchestratorConfig
 	adcConfig           *protocol.ADCNetConfig
 	attestationProvider services.TEEProvider
+	measurementSource   services.MeasurementSource
 
 	registry       *services.Registry
 	registryServer *http.Server
 	registryURL    string
+	httpClient     *http.Client
 
 	clients     []*DeployedService
 	aggregators []*DeployedService
 	servers     []*DeployedService
 
-	// Round output monitoring
 	outputMu     sync.RWMutex
 	roundOutputs []RoundOutput
 	outputChan   chan RoundOutput
@@ -109,10 +119,19 @@ func NewOrchestrator(config *OrchestratorConfig) *Orchestrator {
 		attestationProvider = &tdx.DummyProvider{}
 	}
 
+	var measurementSource services.MeasurementSource
+	if config.MeasurementsURL != "" {
+		measurementSource = services.NewRemoteMeasurementSource(config.MeasurementsURL)
+	} else {
+		measurementSource = services.DemoMeasurementSource()
+	}
+
 	return &Orchestrator{
 		config:              config,
 		adcConfig:           adcConfig,
 		attestationProvider: attestationProvider,
+		measurementSource:   measurementSource,
+		httpClient:          &http.Client{Timeout: 10 * time.Second},
 		roundOutputs:        make([]RoundOutput, 0),
 		outputChan:          make(chan RoundOutput, 100),
 		ctx:                 ctx,
@@ -153,12 +172,10 @@ func (o *Orchestrator) deployRegistry() error {
 	registryAddr := fmt.Sprintf("localhost:%d", registryPort)
 	o.registryURL = fmt.Sprintf("http://%s", registryAddr)
 
-	// Registry uses the same attestation provider as services to verify
-	// registration requests. AllowedMeasurements can restrict which TEE
-	// configurations are permitted to join the network.
 	registryConfig := &services.RegistryConfig{
 		AttestationProvider: o.attestationProvider,
-		MeasurementSource:   nil, // Accept any valid attestation in demo mode
+		MeasurementSource:   o.measurementSource,
+		AdminToken:          o.config.AdminToken,
 	}
 	o.registry = services.NewRegistry(registryConfig, o.adcConfig)
 
@@ -246,14 +263,17 @@ func (o *Orchestrator) deployService(serviceID string, serviceType services.Serv
 
 	addr := fmt.Sprintf("localhost:%d", port)
 
-	// ServiceConfig includes AttestationProvider for consistent verification across all services.
+	// Clients self-register; servers and aggregators are registered by orchestrator
+	selfRegister := serviceType == services.ClientService
+
 	config := &services.ServiceConfig{
 		ADCNetConfig:              o.adcConfig,
 		AttestationProvider:       o.attestationProvider,
-		AllowedMeasurementsSource: nil,
+		AllowedMeasurementsSource: o.measurementSource,
 		HTTPAddr:                  addr,
 		ServiceType:               serviceType,
 		RegistryURL:               o.registryURL,
+		SelfRegister:              selfRegister,
 	}
 
 	service := &DeployedService{
@@ -313,6 +333,13 @@ func (o *Orchestrator) deployService(serviceID string, serviceType services.Serv
 
 	time.Sleep(50 * time.Millisecond)
 
+	// Register servers and aggregators via admin endpoint
+	if serviceType == services.ServerService || serviceType == services.AggregatorService {
+		if err := o.registerServiceAsAdmin(service); err != nil {
+			return nil, fmt.Errorf("admin registration failed: %w", err)
+		}
+	}
+
 	switch serviceType {
 	case services.ClientService:
 		service.Client.Start(o.ctx)
@@ -323,6 +350,65 @@ func (o *Orchestrator) deployService(serviceID string, serviceType services.Serv
 	}
 
 	return service, nil
+}
+
+// registerServiceAsAdmin registers a server or aggregator using admin authentication.
+func (o *Orchestrator) registerServiceAsAdmin(svc *DeployedService) error {
+	req := &services.ServiceRegistrationRequest{
+		ServiceType:  svc.ServiceType,
+		PublicKey:    svc.PublicKey.String(),
+		ExchangeKey:  hex.EncodeToString(svc.ExchangePubKey),
+		HTTPEndpoint: svc.HTTPAddr,
+	}
+
+	// Generate attestation
+	attestation, err := services.AttestServiceRegistration(o.attestationProvider, req)
+	if err != nil {
+		return fmt.Errorf("attestation failed: %w", err)
+	}
+	req.Attestation = attestation
+
+	signedReq, err := protocol.NewSigned(svc.SigningKey, req)
+	if err != nil {
+		return fmt.Errorf("signing failed: %w", err)
+	}
+
+	body, _ := json.Marshal(signedReq)
+
+	url := fmt.Sprintf("%s/admin/register/%s", o.registryURL, svc.ServiceType)
+	httpReq, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	if o.config.AdminToken != "" {
+		// Parse "user:pass" format
+		user, pass := parseAdminToken(o.config.AdminToken)
+		httpReq.SetBasicAuth(user, pass)
+	}
+
+	resp, err := o.httpClient.Do(httpReq)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("registration failed (%d): %s", resp.StatusCode, string(respBody))
+	}
+
+	return nil
+}
+
+func parseAdminToken(token string) (user, pass string) {
+	for i := 0; i < len(token); i++ {
+		if token[i] == ':' {
+			return token[:i], token[i+1:]
+		}
+	}
+	return token, ""
 }
 
 func (o *Orchestrator) handleRoundOutput(broadcast *protocol.RoundBroadcast) {
@@ -370,7 +456,7 @@ func (o *Orchestrator) printRoundOutput(previousRoundAuction *blind_auction.IBFV
 
 	auctionChunks, err := previousRoundAuction.Recover()
 	if err != nil {
-		fmt.Println("could not recover schedule: %s", err.Error())
+		fmt.Printf("could not recover schedule: %s\n", err.Error())
 		fmt.Println("======================")
 		return
 	}

@@ -71,7 +71,7 @@ func (b *baseService) publicKey() crypto.PublicKey {
 }
 
 func (b *baseService) registerWithRegistry() error {
-	if b.config.RegistryURL == "" {
+	if b.config.RegistryURL == "" || !b.config.SelfRegister {
 		return nil
 	}
 
@@ -90,6 +90,7 @@ func (b *baseService) registerWithRegistry() error {
 	}
 
 	body, _ := json.Marshal(signedReq)
+
 	resp, err := b.httpClient.Post(
 		fmt.Sprintf("%s/register/%s", b.config.RegistryURL, b.config.ServiceType),
 		"application/json",
