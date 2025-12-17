@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -9,15 +10,29 @@ import (
 )
 
 func main() {
-	config := &OrchestratorConfig{
-		NumClients:     10,
-		NumAggregators: 2,
-		NumServers:     5,
+	var (
+		numClients     = flag.Int("clients", 10, "Number of clients")
+		numAggregators = flag.Int("aggregators", 2, "Number of aggregators")
+		numServers     = flag.Int("servers", 5, "Number of servers (all required for message recovery)")
+		basePort       = flag.Int("port", 8000, "Base port for services")
+		roundDuration  = flag.Duration("round", 10*time.Second, "Round duration")
+		messageLength  = flag.Int("msg-length", 512000, "Message vector length in bytes")
+		auctionSlots   = flag.Uint("auction-slots", 10, "Number of auction slots")
+		useTDX         = flag.Bool("tdx", false, "Use real TDX attestation")
+		remoteTDXURL   = flag.String("tdx-url", "", "Remote TDX attestation service URL")
+	)
+	flag.Parse()
 
-		BasePort:      8000,
-		RoundDuration: 10 * time.Second,
-		MessageLength: 512000,
-		AuctionSlots:  10,
+	config := &OrchestratorConfig{
+		NumClients:     *numClients,
+		NumAggregators: *numAggregators,
+		NumServers:     *numServers,
+		BasePort:       *basePort,
+		RoundDuration:  *roundDuration,
+		MessageLength:  *messageLength,
+		AuctionSlots:   uint32(*auctionSlots),
+		UseTDX:         *useTDX,
+		RemoteTDXURL:   *remoteTDXURL,
 	}
 
 	orchestrator := NewOrchestrator(config)
@@ -27,13 +42,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Println("\nADCNet deployment running...")
-	fmt.Println("Configuration:")
-	fmt.Printf("  Clients: %d\n", config.NumClients)
-	fmt.Printf("  Aggregators: %d\n", config.NumAggregators)
-	fmt.Printf("  Servers: %d (all required for message recovery)\n", config.NumServers)
-	fmt.Printf("  Round duration: %v\n", config.RoundDuration)
-	fmt.Println("\nPress Ctrl+C to shutdown...")
+	printDeploymentInfo(config, orchestrator)
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
@@ -44,4 +53,31 @@ func main() {
 	}
 
 	fmt.Println("Deployment stopped.")
+}
+
+func printDeploymentInfo(config *OrchestratorConfig, o *Orchestrator) {
+	fmt.Println("\n╔══════════════════════════════════════════════════════════════╗")
+	fmt.Println("║              ADCNet Demo Deployment Running                  ║")
+	fmt.Println("╠══════════════════════════════════════════════════════════════╣")
+	fmt.Printf("║  Clients:      %-4d                                          ║\n", config.NumClients)
+	fmt.Printf("║  Aggregators:  %-4d                                          ║\n", config.NumAggregators)
+	fmt.Printf("║  Servers:      %-4d (all required for message recovery)      ║\n", config.NumServers)
+	fmt.Printf("║  Round:        %-10v                                     ║\n", config.RoundDuration)
+	fmt.Printf("║  Message size: %-6d bytes                                  ║\n", config.MessageLength)
+
+	attestMode := "Dummy"
+	if config.UseTDX {
+		if config.RemoteTDXURL != "" {
+			attestMode = "Remote TDX"
+		} else {
+			attestMode = "Local TDX"
+		}
+	}
+	fmt.Printf("║  Attestation:  %-10s                                     ║\n", attestMode)
+	fmt.Println("╠══════════════════════════════════════════════════════════════╣")
+	fmt.Printf("║  Registry:     http://localhost:%d                          ║\n", config.BasePort-1)
+	fmt.Println("╠══════════════════════════════════════════════════════════════╣")
+	fmt.Println("║  Round outputs will be printed as they complete.            ║")
+	fmt.Println("║  Press Ctrl+C to shutdown.                                  ║")
+	fmt.Println("╚══════════════════════════════════════════════════════════════╝")
 }

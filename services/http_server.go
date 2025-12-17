@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"sync"
 
 	"github.com/flashbots/adcnet/crypto"
 	"github.com/flashbots/adcnet/protocol"
@@ -16,42 +15,45 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 )
 
-// HTTPServer wraps the protocol ServerService with HTTP endpoints.
+// RoundOutputCallback is invoked when a round broadcast is finalized.
+type RoundOutputCallback func(*protocol.RoundBroadcast)
+
+// HTTPServer wraps the protocol ServerService with HTTP endpoints and registry integration.
 type HTTPServer struct {
-	config     *ServiceConfig
-	service    *protocol.ServerService
-	roundCoord *protocol.LocalRoundCoordinator
-	registry   *ServiceRegistry
-	HttpClient *http.Client
-	isLeader   bool
+	*baseService
+	service  *protocol.ServerService
+	isLeader bool
 
-	signingKey  crypto.PrivateKey
-	exchangeKey *ecdh.PrivateKey
-
-	mu                       sync.RWMutex
-	currentRound             protocol.Round
-	currentPartialDecryption *protocol.ServerPartialDecryptionMessage
-	roundBroadcasts          map[int]*protocol.RoundBroadcast
+	currentPartialDecryption *protocol.Signed[protocol.ServerPartialDecryptionMessage]
+	roundBroadcasts          map[int]*protocol.Signed[protocol.RoundBroadcast]
+	roundOutputCallback      RoundOutputCallback
 }
 
-// NewHTTPServer creates a new HTTP-based server service.
+// NewHTTPServer creates a server service that registers with a central registry.
 func NewHTTPServer(config *ServiceConfig, serverID protocol.ServerID, signingKey crypto.PrivateKey,
 	exchangeKey *ecdh.PrivateKey, isLeader bool) (*HTTPServer, error) {
 
+	config.ServiceType = ServerService
+	base, err := newBaseService(config, signingKey, exchangeKey)
+	if err != nil {
+		return nil, err
+	}
+
 	service := protocol.NewServerService(config.ADCNetConfig, serverID, signingKey, exchangeKey)
-	roundCoord := protocol.NewLocalRoundCoordinator(config.RoundDuration)
 
 	return &HTTPServer{
-		config:          config,
+		baseService:     base,
 		service:         service,
-		roundCoord:      roundCoord,
-		registry:        NewServiceRegistry(),
-		HttpClient:      &http.Client{},
 		isLeader:        isLeader,
-		signingKey:      signingKey,
-		exchangeKey:     exchangeKey,
-		roundBroadcasts: make(map[int]*protocol.RoundBroadcast),
+		roundBroadcasts: make(map[int]*protocol.Signed[protocol.RoundBroadcast]),
 	}, nil
+}
+
+// SetRoundOutputCallback sets a callback invoked when rounds complete.
+func (s *HTTPServer) SetRoundOutputCallback(cb RoundOutputCallback) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.roundOutputCallback = cb
 }
 
 // RegisterRoutes registers HTTP routes for the server.
@@ -59,20 +61,63 @@ func (s *HTTPServer) RegisterRoutes(r chi.Router) {
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 
-	r.Post("/register", s.handleRegister)
+	r.Post("/exchange", s.handleSecretExchange)
 	r.Post("/aggregate", s.handleAggregate)
 	r.Post("/partial-decryption", s.handlePartialDecryption)
 	r.Get("/round-broadcast/{round}", s.handleGetRoundBroadcast)
 }
 
-// Start begins the server service.
+// Start registers with the central registry and begins service operations.
 func (s *HTTPServer) Start(ctx context.Context) error {
+	if err := s.registerWithRegistry(); err != nil {
+		return fmt.Errorf("registry registration failed: %w", err)
+	}
+
 	s.roundCoord.Start(ctx)
 	go s.handleRoundTransitions(ctx)
+	go s.runDiscoveryLoop(ctx, s)
+
 	return nil
 }
 
-// handleRoundTransitions processes round changes.
+func (s *HTTPServer) selfPublicKey() string {
+	return s.publicKey().String()
+}
+
+func (s *HTTPServer) onServerDiscovered(info *ServiceInfo) error {
+	_, err := s.verifyAndStoreServer(info)
+	return err
+}
+
+func (s *HTTPServer) onAggregatorDiscovered(info *ServiceInfo) error {
+	_, err := s.verifyAndStoreAggregator(info)
+	return err
+}
+
+func (s *HTTPServer) onClientDiscovered(info *ServiceInfo) error {
+	pubKey, err := crypto.NewPublicKeyFromString(info.PublicKey)
+	if err != nil {
+		return err
+	}
+
+	keyBytes, err := hex.DecodeString(info.ExchangeKey)
+	if err != nil {
+		return err
+	}
+
+	ecdhKey, err := ecdh.P256().NewPublicKey(keyBytes)
+	if err != nil {
+		return err
+	}
+
+	if err := s.service.RegisterClient(pubKey, ecdhKey); err != nil {
+		return err
+	}
+
+	_, err = s.verifyAndStoreClient(info)
+	return err
+}
+
 func (s *HTTPServer) handleRoundTransitions(ctx context.Context) {
 	roundChan := s.roundCoord.SubscribeToRounds(ctx)
 
@@ -87,7 +132,7 @@ func (s *HTTPServer) handleRoundTransitions(ctx context.Context) {
 				s.service.AdvanceToRound(round)
 			} else if round.Context == protocol.ServerPartialRoundContext {
 				if s.currentPartialDecryption != nil &&
-					s.currentPartialDecryption.OriginalAggregate.RoundNumber == round.Number {
+					s.currentPartialDecryption.UnsafeObject().OriginalAggregate.RoundNumber == round.Number {
 					go s.sharePartialDecryption(s.currentPartialDecryption)
 				}
 				s.currentPartialDecryption = nil
@@ -97,25 +142,22 @@ func (s *HTTPServer) handleRoundTransitions(ctx context.Context) {
 	}
 }
 
-// handleRegister registers other servers and clients with this server.
-func (s *HTTPServer) handleRegister(w http.ResponseWriter, r *http.Request) {
-	var req RegistrationRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+func (s *HTTPServer) handleSecretExchange(w http.ResponseWriter, r *http.Request) {
+	var signedReq protocol.Signed[SecretExchangeRequest]
+	if err := json.NewDecoder(r.Body).Decode(&signedReq); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	signingPubkey, err := crypto.NewPublicKeyFromString(req.PublicKey)
+	req, signer, err := signedReq.Recover()
 	if err != nil {
-		http.Error(w, "invalid signing key", http.StatusBadRequest)
+		http.Error(w, fmt.Errorf("invalid signature: %w", err).Error(), http.StatusForbidden)
 		return
 	}
 
-	endpoint := &ServiceEndpoint{
-		ServiceID:    req.ServiceID,
-		HTTPEndpoint: req.HTTPEndpoint,
-		PublicKey:    signingPubkey,
-		ExchangeKey:  req.ExchangeKey,
+	if signer.String() != req.PublicKey {
+		http.Error(w, "signer does not match claimed public key", http.StatusForbidden)
+		return
 	}
 
 	keyBytes, err := hex.DecodeString(req.ExchangeKey)
@@ -134,21 +176,42 @@ func (s *HTTPServer) handleRegister(w http.ResponseWriter, r *http.Request) {
 	defer s.mu.Unlock()
 
 	switch req.ServiceType {
-	case ServerService:
-		s.registry.Servers[req.ServiceID] = endpoint
-		json.NewEncoder(w).Encode(&RegistrationResponse{Success: true})
-
 	case ClientService:
-		s.registry.Clients[req.ServiceID] = endpoint
-		s.service.RegisterClient(signingPubkey, ecdhKey)
-		json.NewEncoder(w).Encode(&RegistrationResponse{Success: true})
+		registered, exists := s.registry.Clients[req.PublicKey]
+		if !exists {
+			http.Error(w, "client not found in registry", http.StatusForbidden)
+			return
+		}
+		if registered.ExchangeKey != req.ExchangeKey {
+			http.Error(w, "exchange key mismatch with attested key", http.StatusForbidden)
+			return
+		}
+
+		pubKey, _ := crypto.NewPublicKeyFromString(req.PublicKey)
+		if err := s.service.RegisterClient(pubKey, ecdhKey); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+	case ServerService:
+		registered, exists := s.registry.Servers[req.PublicKey]
+		if !exists {
+			http.Error(w, "server not found in registry", http.StatusForbidden)
+			return
+		}
+		if registered.ExchangeKey != req.ExchangeKey {
+			http.Error(w, "exchange key mismatch with attested key", http.StatusForbidden)
+			return
+		}
 
 	default:
-		http.Error(w, "invalid service type", http.StatusBadRequest)
+		http.Error(w, "unsupported service type", http.StatusBadRequest)
+		return
 	}
+
+	json.NewEncoder(w).Encode(&SecretExchangeResponse{Success: true})
 }
 
-// handleAggregate receives aggregated messages from aggregators.
 func (s *HTTPServer) handleAggregate(w http.ResponseWriter, r *http.Request) {
 	var req AggregateMessageRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -160,24 +223,37 @@ func (s *HTTPServer) handleAggregate(w http.ResponseWriter, r *http.Request) {
 	defer s.mu.Unlock()
 
 	if s.currentRound.Context >= protocol.ServerPartialRoundContext {
-		http.Error(w, "aggregate submitted too late in the round", http.StatusBadRequest)
+		http.Error(w, "aggregate submitted too late", http.StatusBadRequest)
 		return
 	}
 
-	partial, err := s.service.ProcessAggregateMessage(req.Message)
+	msg, signer, err := req.Message.Recover()
+	if err != nil {
+		http.Error(w, fmt.Errorf("could not recover signature: %w", err).Error(), http.StatusBadRequest)
+		return
+	}
+
+	if _, exists := s.registry.Aggregators[signer.String()]; !exists {
+		http.Error(w, "aggregator not registered or not attested", http.StatusForbidden)
+		return
+	}
+
+	partial, err := s.service.ProcessAggregateMessage(msg)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	s.currentPartialDecryption = partial
-	fmt.Printf("%s: processed aggregate\n", s.config.ServiceID)
+	signedPartial, err := protocol.NewSigned(s.signingKey, partial)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 
+	s.currentPartialDecryption = signedPartial
 	w.WriteHeader(http.StatusOK)
 }
 
-// handlePartialDecryption receives partial decryptions from other servers.
-// Once all servers have contributed, the leader reconstructs the final broadcast.
 func (s *HTTPServer) handlePartialDecryption(w http.ResponseWriter, r *http.Request) {
 	var req PartialDecryptionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -189,29 +265,49 @@ func (s *HTTPServer) handlePartialDecryption(w http.ResponseWriter, r *http.Requ
 	defer s.mu.Unlock()
 
 	if s.roundBroadcasts[s.currentRound.Number] != nil {
-		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(&RoundBroadcastResponse{Broadcast: s.roundBroadcasts[s.currentRound.Number]})
 		return
 	}
 
-	broadcast, err := s.service.ProcessPartialDecryptionMessage(req.Message)
+	msg, signer, err := req.Message.Recover()
+	if err != nil {
+		http.Error(w, fmt.Errorf("could not recover signature: %w", err).Error(), http.StatusBadRequest)
+		return
+	}
+
+	if _, exists := s.registry.Servers[signer.String()]; !exists {
+		http.Error(w, "server not registered or not attested", http.StatusForbidden)
+		return
+	}
+
+	broadcast, err := s.service.ProcessPartialDecryptionMessage(msg)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
+	var signedBroadcast *protocol.Signed[protocol.RoundBroadcast]
 	if broadcast != nil {
-		fmt.Printf("%s (isLeader=%v): recovered broadcast\n", s.config.ServiceID, s.isLeader)
-		s.roundBroadcasts[broadcast.RoundNumber] = broadcast
+		signedBroadcast, err = protocol.NewSigned(s.signingKey, broadcast)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		s.roundBroadcasts[broadcast.RoundNumber] = signedBroadcast
+
+		// Invoke callback for round output monitoring
+		if s.roundOutputCallback != nil {
+			go s.roundOutputCallback(broadcast)
+		}
 
 		if s.isLeader {
-			go s.shareBroadcast(broadcast)
+			go s.shareBroadcast(signedBroadcast)
 		}
 	}
 
-	json.NewEncoder(w).Encode(&RoundBroadcastResponse{Broadcast: broadcast})
+	json.NewEncoder(w).Encode(&RoundBroadcastResponse{Broadcast: signedBroadcast})
 }
 
-// handleGetRoundBroadcast returns the broadcast for a specific round.
 func (s *HTTPServer) handleGetRoundBroadcast(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
 	broadcast := s.roundBroadcasts[s.currentRound.Number]
@@ -225,15 +321,9 @@ func (s *HTTPServer) handleGetRoundBroadcast(w http.ResponseWriter, r *http.Requ
 	json.NewEncoder(w).Encode(&RoundBroadcastResponse{Broadcast: broadcast})
 }
 
-// sharePartialDecryption shares this server's XOR blinding contribution with other servers.
-func (s *HTTPServer) sharePartialDecryption(partial *protocol.ServerPartialDecryptionMessage) {
+func (s *HTTPServer) sharePartialDecryption(partial *protocol.Signed[protocol.ServerPartialDecryptionMessage]) {
 	req := &PartialDecryptionRequest{Message: partial}
-	body, err := json.Marshal(req)
-	if err != nil {
-		fmt.Printf("Server %s: error marshaling partial decryption: %v\n",
-			s.config.ServiceID, err)
-		return
-	}
+	body, _ := json.Marshal(req)
 
 	s.mu.RLock()
 	servers := make([]*ServiceEndpoint, 0, len(s.registry.Servers))
@@ -243,50 +333,40 @@ func (s *HTTPServer) sharePartialDecryption(partial *protocol.ServerPartialDecry
 	s.mu.RUnlock()
 
 	for _, srv := range servers {
-		resp, err := s.HttpClient.Post(
-			fmt.Sprintf("%s/partial-decryption", srv.HTTPEndpoint),
-			"application/json",
-			bytes.NewReader(body),
-		)
+		resp, err := s.httpClient.Post(srv.HTTPEndpoint+"/partial-decryption", "application/json", bytes.NewReader(body))
 		if err != nil {
-			fmt.Printf("Server %s: error sending partial to %s: %v\n",
-				s.config.ServiceID, srv.ServiceID, err)
 			continue
 		}
 		resp.Body.Close()
 	}
 }
 
-// shareBroadcast shares the round broadcast with all registered clients.
-func (s *HTTPServer) shareBroadcast(broadcast *protocol.RoundBroadcast) {
+func (s *HTTPServer) shareBroadcast(broadcast *protocol.Signed[protocol.RoundBroadcast]) {
 	req := &RoundBroadcastResponse{Broadcast: broadcast}
-	body, err := json.Marshal(req)
-	if err != nil {
-		fmt.Printf("Server %s: error marshaling broadcast: %v\n",
-			s.config.ServiceID, err)
-		return
-	}
+	body, _ := json.Marshal(req)
 
 	s.mu.RLock()
 	clients := make([]*ServiceEndpoint, 0, len(s.registry.Clients))
-	for _, client := range s.registry.Clients {
-		clients = append(clients, client)
+	for _, c := range s.registry.Clients {
+		clients = append(clients, c)
 	}
 	s.mu.RUnlock()
 
 	for _, client := range clients {
-		resp, err := s.HttpClient.Post(
-			fmt.Sprintf("%s/round-broadcast", client.HTTPEndpoint),
-			"application/json",
-			bytes.NewReader(body),
-		)
+		resp, err := s.httpClient.Post(client.HTTPEndpoint+"/round-broadcast", "application/json", bytes.NewReader(body))
 		if err != nil {
-			fmt.Printf("Server %s: error sending broadcast to client %s: %v\n",
-				s.config.ServiceID, client.ServiceID, err)
 			continue
 		}
 		resp.Body.Close()
 	}
-	fmt.Printf("%s: sent broadcast for round %d to %d clients\n",
-		s.config.ServiceID, broadcast.RoundNumber, len(clients))
+}
+
+// ServerID returns the server's unique identifier.
+func (s *HTTPServer) ServerID() protocol.ServerID {
+	return protocol.ServerID(crypto.PublicKeyToServerID(s.publicKey()))
+}
+
+// PublicKey returns the server's signing public key.
+func (s *HTTPServer) PublicKey() crypto.PublicKey {
+	return s.publicKey()
 }

@@ -1,21 +1,21 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/ecdh"
 	"crypto/rand"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
+	"sync"
 	"time"
 
+	blind_auction "github.com/flashbots/adcnet/blind-auction"
 	"github.com/flashbots/adcnet/crypto"
 	"github.com/flashbots/adcnet/protocol"
 	"github.com/flashbots/adcnet/services"
+	"github.com/flashbots/adcnet/tdx"
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 )
 
 // OrchestratorConfig contains deployment configuration.
@@ -28,16 +28,39 @@ type OrchestratorConfig struct {
 	RoundDuration time.Duration
 	MessageLength int
 	AuctionSlots  uint32
+
+	// UseTDX enables real TDX attestation instead of dummy provider.
+	UseTDX bool
+	// RemoteTDXURL is the URL for remote TDX attestation service.
+	RemoteTDXURL string
 }
 
-// Orchestrator manages ADCNet deployment.
+// RoundOutput captures the broadcast result for a round.
+type RoundOutput struct {
+	RoundNumber   int
+	MessageVector []byte
+	AuctionVector *blind_auction.IBFVector
+	Timestamp     time.Time
+}
+
+// Orchestrator manages ADCNet deployment with a centralized registry.
 type Orchestrator struct {
-	config    *OrchestratorConfig
-	adcConfig *protocol.ADCNetConfig
+	config              *OrchestratorConfig
+	adcConfig           *protocol.ADCNetConfig
+	attestationProvider services.TEEProvider
+
+	registry       *services.Registry
+	registryServer *http.Server
+	registryURL    string
 
 	clients     []*DeployedService
 	aggregators []*DeployedService
 	servers     []*DeployedService
+
+	// Round output monitoring
+	outputMu     sync.RWMutex
+	roundOutputs []RoundOutput
+	outputChan   chan RoundOutput
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -72,17 +95,38 @@ func NewOrchestrator(config *OrchestratorConfig) *Orchestrator {
 		RoundsPerWindow: 10,
 	}
 
+	var attestationProvider services.TEEProvider
+	if config.UseTDX {
+		if config.RemoteTDXURL != "" {
+			attestationProvider = &tdx.RemoteDCAPProvider{
+				URL:     config.RemoteTDXURL,
+				Timeout: 30 * time.Second,
+			}
+		} else {
+			attestationProvider = &tdx.TDXProvider{}
+		}
+	} else {
+		attestationProvider = &tdx.DummyProvider{}
+	}
+
 	return &Orchestrator{
-		config:    config,
-		adcConfig: adcConfig,
-		ctx:       ctx,
-		cancel:    cancel,
+		config:              config,
+		adcConfig:           adcConfig,
+		attestationProvider: attestationProvider,
+		roundOutputs:        make([]RoundOutput, 0),
+		outputChan:          make(chan RoundOutput, 100),
+		ctx:                 ctx,
+		cancel:              cancel,
 	}
 }
 
-// Deploy starts all services and establishes connections.
+// Deploy starts the registry and all services.
 func (o *Orchestrator) Deploy() error {
 	fmt.Println("Starting ADCNet deployment...")
+
+	if err := o.deployRegistry(); err != nil {
+		return fmt.Errorf("deploy registry: %w", err)
+	}
 
 	if err := o.deployServers(); err != nil {
 		return fmt.Errorf("deploy servers: %w", err)
@@ -96,17 +140,51 @@ func (o *Orchestrator) Deploy() error {
 		return fmt.Errorf("deploy clients: %w", err)
 	}
 
-	if err := o.registerServices(); err != nil {
-		return fmt.Errorf("register services: %w", err)
-	}
+	go o.monitorRoundOutputs()
 
-	fmt.Printf("Deployment complete: %d clients, %d aggregators, %d servers\n",
+	fmt.Printf("Deployment complete: registry + %d clients, %d aggregators, %d servers\n",
 		len(o.clients), len(o.aggregators), len(o.servers))
 
 	return nil
 }
 
-// deployServers creates and starts server instances.
+func (o *Orchestrator) deployRegistry() error {
+	registryPort := o.config.BasePort - 1
+	registryAddr := fmt.Sprintf("localhost:%d", registryPort)
+	o.registryURL = fmt.Sprintf("http://%s", registryAddr)
+
+	// Registry uses the same attestation provider as services to verify
+	// registration requests. AllowedMeasurements can restrict which TEE
+	// configurations are permitted to join the network.
+	registryConfig := &services.RegistryConfig{
+		AttestationProvider: o.attestationProvider,
+		MeasurementSource:   nil, // Accept any valid attestation in demo mode
+	}
+	o.registry = services.NewRegistry(registryConfig, o.adcConfig)
+
+	r := chi.NewRouter()
+	r.Use(middleware.Logger)
+	r.Use(middleware.Recoverer)
+
+	o.registry.RegisterPublicRoutes(r)
+	o.registry.RegisterAdminRoutes(r)
+
+	o.registryServer = &http.Server{
+		Addr:    registryAddr,
+		Handler: r,
+	}
+
+	go func() {
+		fmt.Printf("Starting registry on %s\n", registryAddr)
+		if err := o.registryServer.ListenAndServe(); err != http.ErrServerClosed {
+			fmt.Printf("Registry error: %v\n", err)
+		}
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	return nil
+}
+
 func (o *Orchestrator) deployServers() error {
 	for i := 0; i < o.config.NumServers; i++ {
 		service, err := o.deployService(
@@ -123,7 +201,6 @@ func (o *Orchestrator) deployServers() error {
 	return nil
 }
 
-// deployAggregators creates and starts aggregator instances.
 func (o *Orchestrator) deployAggregators() error {
 	for i := 0; i < o.config.NumAggregators; i++ {
 		service, err := o.deployService(
@@ -140,7 +217,6 @@ func (o *Orchestrator) deployAggregators() error {
 	return nil
 }
 
-// deployClients creates and starts client instances.
 func (o *Orchestrator) deployClients() error {
 	for i := 0; i < o.config.NumClients; i++ {
 		service, err := o.deployService(
@@ -157,7 +233,6 @@ func (o *Orchestrator) deployClients() error {
 	return nil
 }
 
-// deployService creates and starts a single service instance.
 func (o *Orchestrator) deployService(serviceID string, serviceType services.ServiceType, port int, isLeader bool) (*DeployedService, error) {
 	pubKey, privKey, err := crypto.GenerateKeyPair()
 	if err != nil {
@@ -170,12 +245,15 @@ func (o *Orchestrator) deployService(serviceID string, serviceType services.Serv
 	}
 
 	addr := fmt.Sprintf("localhost:%d", port)
+
+	// ServiceConfig includes AttestationProvider for consistent verification across all services.
 	config := &services.ServiceConfig{
-		ADCNetConfig:  o.adcConfig,
-		HTTPAddr:      addr,
-		ServiceID:     serviceID,
-		ServiceType:   serviceType,
-		RoundDuration: o.config.RoundDuration,
+		ADCNetConfig:              o.adcConfig,
+		AttestationProvider:       o.attestationProvider,
+		AllowedMeasurementsSource: nil,
+		HTTPAddr:                  addr,
+		ServiceType:               serviceType,
+		RegistryURL:               o.registryURL,
 	}
 
 	service := &DeployedService{
@@ -194,15 +272,15 @@ func (o *Orchestrator) deployService(serviceID string, serviceType services.Serv
 	case services.ClientService:
 		client, err := services.NewHTTPClient(config, privKey, exchangeKey)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("create client: %w", err)
 		}
 		client.RegisterRoutes(r)
 		service.Client = client
 
 	case services.AggregatorService:
-		aggregator, err := services.NewHTTPAggregator(config)
+		aggregator, err := services.NewHTTPAggregator(config, privKey, exchangeKey)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("create aggregator: %w", err)
 		}
 		aggregator.RegisterRoutes(r)
 		service.Aggregator = aggregator
@@ -211,10 +289,14 @@ func (o *Orchestrator) deployService(serviceID string, serviceType services.Serv
 		serverID := protocol.ServerID(crypto.PublicKeyToServerID(pubKey))
 		server, err := services.NewHTTPServer(config, serverID, privKey, exchangeKey, isLeader)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("create server: %w", err)
 		}
 		server.RegisterRoutes(r)
 		service.Server = server
+
+		if isLeader {
+			server.SetRoundOutputCallback(o.handleRoundOutput)
+		}
 	}
 
 	service.HTTPServer = &http.Server{
@@ -229,6 +311,8 @@ func (o *Orchestrator) deployService(serviceID string, serviceType services.Serv
 		}
 	}()
 
+	time.Sleep(50 * time.Millisecond)
+
 	switch serviceType {
 	case services.ClientService:
 		service.Client.Start(o.ctx)
@@ -238,110 +322,133 @@ func (o *Orchestrator) deployService(serviceID string, serviceType services.Serv
 		service.Server.Start(o.ctx)
 	}
 
-	time.Sleep(100 * time.Millisecond)
-
 	return service, nil
 }
 
-// registerServices establishes connections between services.
-func (o *Orchestrator) registerServices() error {
-	for _, client := range o.clients {
-		for _, server := range o.servers {
-			if err := o.registerService(client, server); err != nil {
-				return fmt.Errorf("register client %s with server %s: %w",
-					client.ServiceID, server.ServiceID, err)
-			}
-			if err := o.registerService(server, client); err != nil {
-				return fmt.Errorf("register server %s with client %s: %w",
-					server.ServiceID, client.ServiceID, err)
-			}
-		}
+func (o *Orchestrator) handleRoundOutput(broadcast *protocol.RoundBroadcast) {
+	output := RoundOutput{
+		RoundNumber:   broadcast.RoundNumber,
+		MessageVector: broadcast.MessageVector,
+		AuctionVector: broadcast.AuctionVector,
+		Timestamp:     time.Now(),
+	}
 
-		for _, agg := range o.aggregators {
-			if err := o.registerService(client, agg); err != nil {
-				return fmt.Errorf("register client %s with aggregator %s: %w",
-					client.ServiceID, agg.ServiceID, err)
+	select {
+	case o.outputChan <- output:
+	default:
+		fmt.Printf("Warning: round output channel full, dropping round %d\n", broadcast.RoundNumber)
+	}
+}
+
+func (o *Orchestrator) monitorRoundOutputs() {
+	for {
+		select {
+		case <-o.ctx.Done():
+			return
+		case output := <-o.outputChan:
+			var previousRoundAuction *blind_auction.IBFVector = nil
+			o.outputMu.Lock()
+			if len(o.roundOutputs) > 0 {
+				previousRoundAuction = o.roundOutputs[len(o.roundOutputs)-1].AuctionVector
 			}
-			if err := o.registerService(agg, client); err != nil {
-				return fmt.Errorf("register aggregator %s with client %s: %w",
-					agg.ServiceID, client.ServiceID, err)
+			o.roundOutputs = append(o.roundOutputs, output)
+			o.outputMu.Unlock()
+
+			o.printRoundOutput(previousRoundAuction, output)
+		}
+	}
+}
+
+func (o *Orchestrator) printRoundOutput(previousRoundAuction *blind_auction.IBFVector, output RoundOutput) {
+	fmt.Printf("\n=== Round %d ===\n", output.RoundNumber)
+	fmt.Printf("Timestamp: %s\n", output.Timestamp.Format(time.RFC3339))
+	if previousRoundAuction == nil {
+		fmt.Println("unknown schedule for previous round")
+		fmt.Println("======================")
+		return
+	}
+
+	auctionChunks, err := previousRoundAuction.Recover()
+	if err != nil {
+		fmt.Println("could not recover schedule: %s", err.Error())
+		fmt.Println("======================")
+		return
+	}
+
+	recoveredAuctionData := make([]blind_auction.AuctionData, len(auctionChunks))
+	for i := range recoveredAuctionData {
+		recoveredAuctionData[i] = *blind_auction.AuctionDataFromChunk(auctionChunks[i])
+	}
+
+	auctionWinners := blind_auction.NewAuctionEngine(uint32(o.adcConfig.MessageLength), 1).RunAuction(recoveredAuctionData)
+
+	messages := make([][]byte, len(auctionWinners))
+	for i, scheduledBid := range auctionWinners {
+		messages[i] = output.MessageVector[scheduledBid.SlotIdx : scheduledBid.SlotIdx+scheduledBid.SlotSize]
+	}
+
+	if len(messages) == 0 {
+		fmt.Println("No messages in this round")
+	} else {
+		fmt.Printf("Messages found: %d\n", len(messages))
+		for i, msg := range messages {
+			if len(msg) > 100 {
+				fmt.Printf("  [%d] %s... (%d bytes)\n", i, string(msg[:100]), len(msg))
+			} else {
+				fmt.Printf("  [%d] %s\n", i, string(msg))
 			}
 		}
 	}
+	fmt.Println("======================")
+}
 
-	for _, agg := range o.aggregators {
-		for _, server := range o.servers {
-			if err := o.registerService(agg, server); err != nil {
-				return fmt.Errorf("register aggregator %s with server %s: %w",
-					agg.ServiceID, server.ServiceID, err)
-			}
-			if err := o.registerService(server, agg); err != nil {
-				return fmt.Errorf("register server %s with aggregator %s: %w",
-					server.ServiceID, agg.ServiceID, err)
-			}
-		}
+// GetRoundOutputs returns all captured round outputs.
+func (o *Orchestrator) GetRoundOutputs() []RoundOutput {
+	o.outputMu.RLock()
+	defer o.outputMu.RUnlock()
+	result := make([]RoundOutput, len(o.roundOutputs))
+	copy(result, o.roundOutputs)
+	return result
+}
+
+// GetLatestRoundOutput returns the most recent round output.
+func (o *Orchestrator) GetLatestRoundOutput() *RoundOutput {
+	o.outputMu.RLock()
+	defer o.outputMu.RUnlock()
+	if len(o.roundOutputs) == 0 {
+		return nil
 	}
+	output := o.roundOutputs[len(o.roundOutputs)-1]
+	return &output
+}
 
-	for _, s1 := range o.servers {
-		for _, s2 := range o.servers {
-			if s1.ServiceID != s2.ServiceID {
-				if err := o.registerService(s1, s2); err != nil {
-					return fmt.Errorf("register server %s with server %s: %w",
-						s1.ServiceID, s2.ServiceID, err)
+// SubscribeToRoundOutputs returns a channel that receives round outputs.
+func (o *Orchestrator) SubscribeToRoundOutputs() <-chan RoundOutput {
+	ch := make(chan RoundOutput, 10)
+	go func() {
+		for {
+			select {
+			case <-o.ctx.Done():
+				close(ch)
+				return
+			case output := <-o.outputChan:
+				o.outputMu.Lock()
+				o.roundOutputs = append(o.roundOutputs, output)
+				o.outputMu.Unlock()
+
+				select {
+				case ch <- output:
+				default:
 				}
 			}
 		}
-	}
-
-	return nil
+	}()
+	return ch
 }
 
-// registerService registers one service with another.
-func (o *Orchestrator) registerService(from, to *DeployedService) error {
-	req := &services.RegistrationRequest{
-		ServiceID:    from.ServiceID,
-		ServiceType:  from.ServiceType,
-		PublicKey:    from.PublicKey.String(),
-		ExchangeKey:  hex.EncodeToString(from.ExchangePubKey),
-		HTTPEndpoint: from.HTTPAddr,
-	}
-
-	if from.Client != nil {
-		return o.postJSON(from.Client.HttpClient, to.HTTPAddr+"/register", req)
-	} else if from.Aggregator != nil {
-		return o.postJSON(from.Aggregator.HttpClient, to.HTTPAddr+"/register", req)
-	} else if from.Server != nil {
-		return o.postJSON(from.Server.HttpClient, to.HTTPAddr+"/register", req)
-	}
-
-	return fmt.Errorf("no HTTP client available")
-}
-
-// postJSON sends a JSON POST request.
-func (o *Orchestrator) postJSON(client *http.Client, url string, data interface{}) error {
-	body, err := json.Marshal(data)
-	if err != nil {
-		return err
-	}
-
-	resp, err := client.Post(url, "application/json", bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("server returned status %d: %s", resp.StatusCode, string(bodyBytes))
-	}
-
-	return nil
-}
-
-// Shutdown stops all services.
+// Shutdown stops all services and the registry.
 func (o *Orchestrator) Shutdown() error {
 	fmt.Println("Shutting down deployment...")
-
 	o.cancel()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -353,9 +460,11 @@ func (o *Orchestrator) Shutdown() error {
 	allServices = append(allServices, o.servers...)
 
 	for _, svc := range allServices {
-		if err := svc.HTTPServer.Shutdown(ctx); err != nil {
-			fmt.Printf("Error shutting down %s: %v\n", svc.ServiceID, err)
-		}
+		svc.HTTPServer.Shutdown(ctx)
+	}
+
+	if o.registryServer != nil {
+		o.registryServer.Shutdown(ctx)
 	}
 
 	return nil

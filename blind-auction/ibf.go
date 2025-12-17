@@ -142,7 +142,7 @@ func ChunkIndex(chunk [IBFChunkSize]byte, level int, itemsInLevel int) uint64 {
 }
 
 // Recover extracts auction entries from the reconstructed IBF using the peeling algorithm.
-// Called after threshold decryption to determine next round's message scheduling.
+// Called after decryption to determine next round's message scheduling.
 func (v *IBFVector) Recover() ([][IBFChunkSize]byte, error) {
 	// Create a copy of the IBF to work with during recovery
 	workingCopy := &IBFVector{}
