@@ -22,7 +22,7 @@ keyed by their public key. The registry supports admin authentication for
 registering infrastructure services (servers, aggregators).
 
 Public Endpoints:
-  - POST /register/client - Register a client (self-registration, no auth)
+  - POST /register/client - Register a client (no auth required)
   - GET /services - List all registered services
   - GET /services/{type} - List services by type
   - GET /config - Get protocol configuration
@@ -39,14 +39,14 @@ Clients self-register on startup via the public endpoint.
 Endpoints: POST /exchange, POST /round-broadcast.
 
 HTTPAggregator wraps protocol.AggregatorService with registry integration.
-Aggregators must be registered by an admin before they can participate.
-Endpoints: GET /registration-data, POST /exchange, POST /client-messages,
-POST /aggregate-messages, GET /aggregates/{round}.
+Aggregators self-register via admin endpoint with configured admin_token.
+Endpoints: POST /exchange, POST /client-messages, POST /aggregate-messages,
+GET /aggregates/{round}.
 
 HTTPServer wraps protocol.ServerService with registry integration.
-Servers must be registered by an admin before they can participate.
-Endpoints: GET /registration-data, POST /exchange, POST /aggregate,
-POST /partial-decryption, GET /round-broadcast/{round}.
+Servers self-register via admin endpoint with configured admin_token.
+Endpoints: POST /exchange, POST /aggregate, POST /partial-decryption,
+GET /round-broadcast/{round}.
 
 ## Measurement Sources
 
@@ -62,17 +62,30 @@ ServiceConfig controls service behavior:
   - AttestationProvider: TEE provider for generating/verifying attestations
   - AllowedMeasurementsSource: Expected measurements for peer verification
   - RegistryURL: Central registry for service discovery
-  - SelfRegister: Whether to auto-register on start (true for clients)
+  - AdminToken: Authentication for admin registration (servers/aggregators)
+
+Configuration can be provided via YAML files:
+
+	http_addr: ":8081"
+	registry_url: "http://localhost:8080"
+	admin_token: "admin:secret"
+	keys:
+	  signing_key: ""
+	  exchange_key: ""
+	attestation:
+	  use_tdx: false
+	  measurements_url: ""
+	server:
+	  is_leader: false
 
 ## Service Lifecycle
 
  1. Registry starts with optional admin authentication configured
- 2. Servers and aggregators start, exposing GET /registration-data
- 3. Admin fetches signed registration data from each service and forwards to registry
+ 2. Servers and aggregators start and self-register via admin endpoint
+ 3. Clients start and self-register via public endpoint
  4. Services begin discovery polling after registration
- 5. Clients start and self-register via public endpoint
- 6. During discovery, attestation is verified before adding peers to local cache
- 7. Secret exchange uses signed requests, verified against local registry
+ 5. During discovery, attestation is verified before adding peers
+ 6. Secret exchange uses signed requests, verified against local registry
 
 # Message Flow
 
@@ -106,8 +119,6 @@ are verified against attested keys stored in the local registry.
   - XOR-based one-time pad blinding per round
   - Attestation verification during service discovery
   - All messages signed and verified against attested registry
-  - Registration data self-signed and attested by each service's TEE
-  - Admin forwards pre-signed registration data without modification
   - Requires ALL servers to participate for message recovery
   - Basic auth protects admin registration of servers and aggregators
   - Constant-time comparison for admin token verification

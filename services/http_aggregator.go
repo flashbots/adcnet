@@ -41,8 +41,7 @@ func (a *HTTPAggregator) RegisterRoutes(r chi.Router) {
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 
-	r.Get("/registration-data", a.handleRegistrationData)
-	r.Post("/exchange", a.handleSecretExchange)
+	r.Post("/register", func(w http.ResponseWriter, r *http.Request) { a.handleRegister(w, r, a) })
 	r.Post("/client-messages", a.handleClientMessages)
 	r.Post("/aggregate-messages", a.handleAggregateMessages)
 	r.Get("/aggregates/{round}", a.handleGetAggregates)
@@ -61,22 +60,16 @@ func (a *HTTPAggregator) Start(ctx context.Context) error {
 	return nil
 }
 
-func (a *HTTPAggregator) handleRegistrationData(w http.ResponseWriter, r *http.Request) {
-	data, err := a.baseService.RegistrationData()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	json.NewEncoder(w).Encode(data)
-}
-
 func (a *HTTPAggregator) selfPublicKey() string {
 	return a.publicKey().String()
 }
 
 func (a *HTTPAggregator) onServerDiscovered(info *ServiceInfo) error {
-	_, err := a.verifyAndStoreServer(info)
-	return err
+	if _, err := a.verifyAndStoreServer(info); err != nil {
+		return err
+	}
+
+	return a.sendRegistrationDirectly(info.HTTPEndpoint, AggregatorService)
 }
 
 func (a *HTTPAggregator) onAggregatorDiscovered(info *ServiceInfo) error {
@@ -160,64 +153,6 @@ func (a *HTTPAggregator) sendToServer(srv *ServiceEndpoint, agg *protocol.Aggreg
 	return nil
 }
 
-func (a *HTTPAggregator) handleSecretExchange(w http.ResponseWriter, r *http.Request) {
-	var signedReq protocol.Signed[SecretExchangeRequest]
-	if err := json.NewDecoder(r.Body).Decode(&signedReq); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	req, signer, err := signedReq.Recover()
-	if err != nil {
-		http.Error(w, fmt.Errorf("invalid signature: %w", err).Error(), http.StatusForbidden)
-		return
-	}
-
-	if signer.String() != req.PublicKey {
-		http.Error(w, "signer does not match claimed public key", http.StatusForbidden)
-		return
-	}
-
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	switch req.ServiceType {
-	case ClientService:
-		registered, exists := a.registry.Clients[req.PublicKey]
-		if !exists {
-			http.Error(w, "client not found in registry", http.StatusForbidden)
-			return
-		}
-		if registered.ExchangeKey != req.ExchangeKey {
-			http.Error(w, "exchange key mismatch with attested key", http.StatusForbidden)
-			return
-		}
-
-		pubKey, _ := crypto.NewPublicKeyFromString(req.PublicKey)
-		if err := a.service.RegisterClient(pubKey); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-	case ServerService:
-		registered, exists := a.registry.Servers[req.PublicKey]
-		if !exists {
-			http.Error(w, "server not found in registry", http.StatusForbidden)
-			return
-		}
-		if registered.ExchangeKey != req.ExchangeKey {
-			http.Error(w, "exchange key mismatch with attested key", http.StatusForbidden)
-			return
-		}
-
-	default:
-		http.Error(w, "unsupported service type", http.StatusBadRequest)
-		return
-	}
-
-	json.NewEncoder(w).Encode(&SecretExchangeResponse{Success: true})
-}
-
 func (a *HTTPAggregator) handleClientMessages(w http.ResponseWriter, r *http.Request) {
 	var req ClientMessageRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -242,6 +177,7 @@ func (a *HTTPAggregator) handleClientMessages(w http.ResponseWriter, r *http.Req
 
 	aggregate, err := a.service.ProcessClientMessages(req.Messages)
 	if err != nil {
+		fmt.Println(err.Error())
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
