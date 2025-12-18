@@ -1,12 +1,10 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/ecdh"
 	"crypto/rand"
 	"fmt"
-	"io"
 	"net/http"
 	"sync"
 	"time"
@@ -31,15 +29,10 @@ type OrchestratorConfig struct {
 	MessageLength int
 	AuctionSlots  uint32
 
-	// UseTDX enables real TDX attestation instead of dummy provider.
-	UseTDX bool
-	// RemoteTDXURL is the URL for remote TDX attestation service.
-	RemoteTDXURL string
-	// MeasurementsURL is the URL for fetching allowed measurements.
-	// If empty, uses demo static measurements.
+	UseTDX          bool
+	RemoteTDXURL    string
 	MeasurementsURL string
-	// AdminToken is the basic auth token for admin operations (user:pass).
-	AdminToken string
+	AdminToken      string
 }
 
 // RoundOutput captures the broadcast result for a round.
@@ -261,9 +254,8 @@ func (o *Orchestrator) deployService(serviceID string, serviceType services.Serv
 
 	addr := fmt.Sprintf("localhost:%d", port)
 
-	// Clients self-register; servers and aggregators are registered by orchestrator
-	selfRegister := serviceType == services.ClientService
-
+	// All services include admin token for self-registration
+	// (clients use public endpoint, servers/aggregators use admin endpoint)
 	config := &services.ServiceConfig{
 		ADCNetConfig:              o.adcConfig,
 		AttestationProvider:       o.attestationProvider,
@@ -271,7 +263,7 @@ func (o *Orchestrator) deployService(serviceID string, serviceType services.Serv
 		HTTPAddr:                  addr,
 		ServiceType:               serviceType,
 		RegistryURL:               o.registryURL,
-		SelfRegister:              selfRegister,
+		AdminToken:                o.config.AdminToken,
 	}
 
 	service := &DeployedService{
@@ -331,13 +323,7 @@ func (o *Orchestrator) deployService(serviceID string, serviceType services.Serv
 
 	time.Sleep(50 * time.Millisecond)
 
-	// Register servers and aggregators via admin endpoint
-	if serviceType == services.ServerService || serviceType == services.AggregatorService {
-		if err := o.registerServiceAsAdmin(service); err != nil {
-			return nil, fmt.Errorf("admin registration failed: %w", err)
-		}
-	}
-
+	// Start the service (handles self-registration internally)
 	switch serviceType {
 	case services.ClientService:
 		service.Client.Start(o.ctx)
@@ -348,61 +334,6 @@ func (o *Orchestrator) deployService(serviceID string, serviceType services.Serv
 	}
 
 	return service, nil
-}
-
-// registerServiceAsAdmin fetches registration data from the service and forwards it to the registry.
-func (o *Orchestrator) registerServiceAsAdmin(svc *DeployedService) error {
-	// Fetch signed and attested registration data from the service itself
-	resp, err := o.httpClient.Get(svc.HTTPAddr + "/registration-data")
-	if err != nil {
-		return fmt.Errorf("fetch registration data: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("fetch registration data failed (%d): %s", resp.StatusCode, body)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("read registration data: %w", err)
-	}
-
-	// Forward to registry admin endpoint
-	url := fmt.Sprintf("%s/admin/register/%s", o.registryURL, svc.ServiceType)
-	httpReq, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	if o.config.AdminToken != "" {
-		user, pass := parseAdminToken(o.config.AdminToken)
-		httpReq.SetBasicAuth(user, pass)
-	}
-
-	adminResp, err := o.httpClient.Do(httpReq)
-	if err != nil {
-		return err
-	}
-	defer adminResp.Body.Close()
-
-	if adminResp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(adminResp.Body)
-		return fmt.Errorf("registration failed (%d): %s", adminResp.StatusCode, string(respBody))
-	}
-
-	return nil
-}
-
-func parseAdminToken(token string) (user, pass string) {
-	for i := 0; i < len(token); i++ {
-		if token[i] == ':' {
-			return token[:i], token[i+1:]
-		}
-	}
-	return token, ""
 }
 
 func (o *Orchestrator) handleRoundOutput(broadcast *protocol.RoundBroadcast) {
@@ -440,18 +371,19 @@ func (o *Orchestrator) monitorRoundOutputs() {
 }
 
 func (o *Orchestrator) printRoundOutput(previousRoundAuction *blind_auction.IBFVector, output RoundOutput) {
-	fmt.Printf("\n=== Round %d ===\n", output.RoundNumber)
-	fmt.Printf("Timestamp: %s\n", output.Timestamp.Format(time.RFC3339))
+	var tout string
+	tout += fmt.Sprintf("=== Round %d ===\n", output.RoundNumber)
+	tout += fmt.Sprintf("Timestamp: %s\n", output.Timestamp.Format(time.RFC3339))
 	if previousRoundAuction == nil {
-		fmt.Println("unknown schedule for previous round")
-		fmt.Println("======================")
+		tout += fmt.Sprintln("unknown schedule for previous round")
+		tout += fmt.Sprintln("======================")
 		return
 	}
 
 	auctionChunks, err := previousRoundAuction.Recover()
 	if err != nil {
-		fmt.Printf("could not recover schedule: %s\n", err.Error())
-		fmt.Println("======================")
+		tout += fmt.Sprintf("could not recover schedule: %s\n", err.Error())
+		tout += "======================\n"
 		return
 	}
 
@@ -468,18 +400,19 @@ func (o *Orchestrator) printRoundOutput(previousRoundAuction *blind_auction.IBFV
 	}
 
 	if len(messages) == 0 {
-		fmt.Println("No messages in this round")
+		tout += "No messages in this round\n"
 	} else {
-		fmt.Printf("Messages found: %d\n", len(messages))
+		tout += fmt.Sprintf("Messages found: %d\n", len(messages))
 		for i, msg := range messages {
 			if len(msg) > 100 {
-				fmt.Printf("  [%d] %s... (%d bytes)\n", i, string(msg[:100]), len(msg))
+				tout += fmt.Sprintf("  [%d] %s... (%d bytes)\n", i, string(msg[:100]), len(msg))
 			} else {
-				fmt.Printf("  [%d] %s\n", i, string(msg))
+				tout += fmt.Sprintf("  [%d] %s\n", i, string(msg))
 			}
 		}
 	}
-	fmt.Println("======================")
+	tout += "======================\n"
+	fmt.Print(tout)
 }
 
 // GetRoundOutputs returns all captured round outputs.

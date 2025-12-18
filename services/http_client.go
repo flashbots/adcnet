@@ -43,7 +43,6 @@ func (c *HTTPClient) RegisterRoutes(r chi.Router) {
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 
-	r.Post("/exchange", c.handleSecretExchange)
 	r.Post("/round-broadcast", c.handleRoundBroadcast)
 }
 
@@ -89,12 +88,18 @@ func (c *HTTPClient) onServerDiscovered(info *ServiceInfo) error {
 		return err
 	}
 
-	return c.sendSignedSecretExchange(info.HTTPEndpoint, ClientService)
+	// Just to be sure, register with the server directly
+	return c.sendRegistrationDirectly(info.HTTPEndpoint, ClientService)
 }
 
 func (c *HTTPClient) onAggregatorDiscovered(info *ServiceInfo) error {
 	_, err := c.verifyAndStoreAggregator(info)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Just to be sure, register with the aggregator directly
+	return c.sendRegistrationDirectly(info.HTTPEndpoint, ClientService)
 }
 
 func (c *HTTPClient) onClientDiscovered(info *ServiceInfo) error {
@@ -164,64 +169,6 @@ func (c *HTTPClient) sendToAggregator(agg *ServiceEndpoint, req *ClientMessageRe
 		return fmt.Errorf("aggregator returned status %d", resp.StatusCode)
 	}
 	return nil
-}
-
-func (c *HTTPClient) handleSecretExchange(w http.ResponseWriter, r *http.Request) {
-	var signedReq protocol.Signed[SecretExchangeRequest]
-	if err := json.NewDecoder(r.Body).Decode(&signedReq); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	req, signer, err := signedReq.Recover()
-	if err != nil {
-		http.Error(w, fmt.Errorf("invalid signature: %w", err).Error(), http.StatusForbidden)
-		return
-	}
-
-	if signer.String() != req.PublicKey {
-		http.Error(w, "signer does not match claimed public key", http.StatusForbidden)
-		return
-	}
-
-	keyBytes, err := hex.DecodeString(req.ExchangeKey)
-	if err != nil {
-		http.Error(w, "invalid exchange key", http.StatusBadRequest)
-		return
-	}
-
-	ecdhKey, err := ecdh.P256().NewPublicKey(keyBytes)
-	if err != nil {
-		http.Error(w, "invalid ECDH key", http.StatusBadRequest)
-		return
-	}
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if req.ServiceType == ServerService {
-		registered, exists := c.registry.Servers[req.PublicKey]
-		if !exists {
-			http.Error(w, "server not found in registry", http.StatusForbidden)
-			return
-		}
-		if registered.ExchangeKey != req.ExchangeKey {
-			http.Error(w, "exchange key mismatch with attested key", http.StatusForbidden)
-			return
-		}
-
-		pubKey, _ := crypto.NewPublicKeyFromString(req.PublicKey)
-		serverID := protocol.ServerID(crypto.PublicKeyToServerID(pubKey))
-		if err := c.service.RegisterServer(serverID, ecdhKey); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-	} else {
-		http.Error(w, "unsupported service type", http.StatusBadRequest)
-		return
-	}
-
-	json.NewEncoder(w).Encode(&SecretExchangeResponse{Success: true})
 }
 
 func (c *HTTPClient) handleRoundBroadcast(w http.ResponseWriter, r *http.Request) {

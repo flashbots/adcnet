@@ -1,19 +1,30 @@
 // Command aggregator runs a standalone ADCNet aggregator service.
 //
-// Aggregators reduce bandwidth requirements by combining messages from multiple
-// clients before forwarding to servers. They XOR client message vectors together
-// and add auction vectors in the finite field.
+// Aggregators reduce bandwidth by combining messages from multiple clients
+// before forwarding to servers.
+//
+// # Configuration File
+//
+// Create a YAML file with aggregator settings:
+//
+//	http_addr: ":8082"
+//	registry_url: "http://localhost:8080"
+//	admin_token: "admin:secret"
+//	keys:
+//	  signing_key: ""     # Hex-encoded, generates if empty
+//	  exchange_key: ""    # Hex-encoded, generates if empty
+//	attestation:
+//	  use_tdx: false
+//	  measurements_url: ""
 //
 // # Registration
 //
-// Aggregators expose a GET /registration-data endpoint that returns signed and
-// attested registration data. An administrator fetches this data and forwards
-// it to the registry's admin endpoint. This ensures the attestation originates
-// from the aggregator's own TEE.
+// Aggregators self-register with the registry using the admin_token for authentication.
 //
 // # Usage
 //
-//	go run ./cmd/aggregator --registry=http://localhost:8080
+//	go run ./cmd/aggregator --config=aggregator.yaml
+//	go run ./cmd/aggregator --registry=http://localhost:8080 --admin-token=admin:secret
 package main
 
 import (
@@ -35,8 +46,10 @@ import (
 
 func main() {
 	var (
+		configPath      = flag.String("config", "", "Path to YAML config file")
 		addr            = flag.String("addr", ":8082", "HTTP listen address")
 		registryURL     = flag.String("registry", "", "Registry URL for service discovery")
+		adminToken      = flag.String("admin-token", "", "Admin token for registry (user:pass)")
 		measurementsURL = flag.String("measurements-url", "", "URL for allowed measurements")
 		useTDX          = flag.Bool("tdx", false, "Use real TDX attestation")
 		remoteTDXURL    = flag.String("tdx-url", "", "Remote TDX attestation service URL")
@@ -45,18 +58,57 @@ func main() {
 	)
 	flag.Parse()
 
-	if *registryURL == "" {
-		fmt.Println("Error: --registry is required")
+	var cfg *common.Config
+	var err error
+
+	if *configPath != "" {
+		cfg, err = common.LoadConfig(*configPath)
+		if err != nil {
+			fmt.Printf("Error loading config: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		cfg = common.DefaultConfig()
+	}
+
+	// Command-line flags override config file
+	if *addr != ":8082" || cfg.HTTPAddr == "" {
+		cfg.HTTPAddr = *addr
+	}
+	if *registryURL != "" {
+		cfg.RegistryURL = *registryURL
+	}
+	if *adminToken != "" {
+		cfg.AdminToken = *adminToken
+	}
+	if *measurementsURL != "" {
+		cfg.Attestation.MeasurementsURL = *measurementsURL
+	}
+	if *useTDX {
+		cfg.Attestation.UseTDX = true
+	}
+	if *remoteTDXURL != "" {
+		cfg.Attestation.TDXRemoteURL = *remoteTDXURL
+	}
+	if *signingKeyHex != "" {
+		cfg.Keys.SigningKey = *signingKeyHex
+	}
+	if *exchangeKeyHex != "" {
+		cfg.Keys.ExchangeKey = *exchangeKeyHex
+	}
+
+	if cfg.RegistryURL == "" {
+		fmt.Println("Error: registry_url is required (via --registry or config file)")
 		os.Exit(1)
 	}
 
-	signingKey, err := common.LoadOrGenerateSigningKey(*signingKeyHex)
+	signingKey, err := common.LoadOrGenerateSigningKey(cfg.Keys.SigningKey)
 	if err != nil {
 		fmt.Printf("Signing key error: %v\n", err)
 		os.Exit(1)
 	}
 
-	exchangeKey, err := common.LoadOrGenerateExchangeKey(*exchangeKeyHex)
+	exchangeKey, err := common.LoadOrGenerateExchangeKey(cfg.Keys.ExchangeKey)
 	if err != nil {
 		fmt.Printf("Exchange key error: %v\n", err)
 		os.Exit(1)
@@ -66,26 +118,26 @@ func main() {
 	fmt.Printf("Aggregator public key: %s\n", pubKey.String())
 	fmt.Printf("Exchange public key: %s\n", hex.EncodeToString(exchangeKey.PublicKey().Bytes()))
 
-	adcConfig, err := common.FetchADCConfig(*registryURL)
+	adcConfig, err := common.FetchADCConfig(cfg.RegistryURL)
 	if err != nil {
 		fmt.Printf("Error fetching config: %v\n", err)
 		os.Exit(1)
 	}
 
-	attestationProvider := common.NewAttestationProvider(*useTDX, *remoteTDXURL)
-	measurementSource := common.NewMeasurementSource(*measurementsURL)
+	attestationProvider := common.NewAttestationProvider(cfg.Attestation)
+	measurementSource := common.NewMeasurementSource(cfg.Attestation.MeasurementsURL)
 
-	config := &services.ServiceConfig{
+	svcConfig := &services.ServiceConfig{
 		ADCNetConfig:              adcConfig,
 		AttestationProvider:       attestationProvider,
 		AllowedMeasurementsSource: measurementSource,
-		HTTPAddr:                  *addr,
+		HTTPAddr:                  cfg.HTTPAddr,
 		ServiceType:               services.AggregatorService,
-		RegistryURL:               *registryURL,
-		SelfRegister:              false, // Admin registers aggregators
+		RegistryURL:               cfg.RegistryURL,
+		AdminToken:                cfg.AdminToken,
 	}
 
-	aggregator, err := services.NewHTTPAggregator(config, signingKey, exchangeKey)
+	aggregator, err := services.NewHTTPAggregator(svcConfig, signingKey, exchangeKey)
 	if err != nil {
 		fmt.Printf("Create aggregator error: %v\n", err)
 		os.Exit(1)
@@ -104,7 +156,7 @@ func main() {
 	})
 
 	httpServer := &http.Server{
-		Addr:         *addr,
+		Addr:         cfg.HTTPAddr,
 		Handler:      r,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
@@ -114,8 +166,7 @@ func main() {
 	defer cancel()
 
 	go func() {
-		fmt.Printf("Aggregator listening on %s\n", *addr)
-		fmt.Println("Registration data available at GET /registration-data")
+		fmt.Printf("Aggregator listening on %s\n", cfg.HTTPAddr)
 		if err := httpServer.ListenAndServe(); err != http.ErrServerClosed {
 			fmt.Printf("Server error: %v\n", err)
 			os.Exit(1)

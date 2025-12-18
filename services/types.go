@@ -15,9 +15,9 @@ type ServiceConfig struct {
 	HTTPAddr                  string
 	ServiceType               ServiceType
 	RegistryURL               string
-	// SelfRegister enables automatic registration with the registry on start.
-	// Clients typically self-register; servers and aggregators are registered by an admin.
-	SelfRegister bool
+	// AdminToken for authenticating with registry admin endpoints (user:pass).
+	// Required for servers and aggregators.
+	AdminToken string
 }
 
 // ServiceType identifies the type of service.
@@ -30,7 +30,6 @@ const (
 )
 
 // ServiceRegistrationRequest registers a service with the central registry.
-// Must be signed to verify the registrant owns the claimed public key.
 type ServiceRegistrationRequest struct {
 	ServiceType  ServiceType `json:"service_type"`
 	PublicKey    string      `json:"public_key"`
@@ -73,15 +72,6 @@ type ServiceListResponse struct {
 	Clients     []*ServiceInfo `json:"clients"`
 }
 
-// SecretExchangeRequest initiates ECDH key exchange between services.
-// Must be signed to verify the requester owns the claimed public key.
-// Attestation is verified against local registry data, not provided in request.
-type SecretExchangeRequest struct {
-	ServiceType ServiceType `json:"service_type"`
-	PublicKey   string      `json:"public_key"`
-	ExchangeKey string      `json:"exchange_key"`
-}
-
 // SecretExchangeResponse confirms shared secret establishment.
 type SecretExchangeResponse struct {
 	Success bool   `json:"success"`
@@ -89,31 +79,26 @@ type SecretExchangeResponse struct {
 }
 
 // ClientMessageRequest wraps signed client messages for HTTP transport.
-// Signatures verified against attested client keys in registry.
 type ClientMessageRequest struct {
 	Messages []*protocol.Signed[protocol.ClientRoundMessage] `json:"messages"`
 }
 
 // AggregateMessageRequest wraps signed aggregated messages.
-// Signature verified against attested aggregator keys in registry.
 type AggregateMessageRequest struct {
 	Message *protocol.Signed[protocol.AggregatedClientMessages] `json:"message"`
 }
 
 // PartialDecryptionRequest wraps signed partial decryption messages.
-// Signature verified against attested server keys in registry.
 type PartialDecryptionRequest struct {
 	Message *protocol.Signed[protocol.ServerPartialDecryptionMessage] `json:"message"`
 }
 
 // RoundBroadcastResponse wraps signed round broadcast results.
-// Signature verified against attested server keys in registry.
 type RoundBroadcastResponse struct {
 	Broadcast *protocol.Signed[protocol.RoundBroadcast] `json:"broadcast"`
 }
 
 // AggregateAggregatesRequest wraps signed aggregates for inter-aggregator communication.
-// Signatures verified against attested aggregator keys in registry.
 type AggregateAggregatesRequest struct {
 	Messages []*protocol.Signed[protocol.AggregatedClientMessages] `json:"messages"`
 }
@@ -130,14 +115,15 @@ type MessageResponse struct {
 	Messages []*protocol.Signed[protocol.ClientRoundMessage] `json:"messages,omitempty"`
 }
 
-// ServiceRegistry caches discovered service endpoints locally with verified attestation.
+// ServiceRegistry caches discovered service endpoints locally.
 type ServiceRegistry struct {
 	Clients     map[string]*ServiceEndpoint
 	Aggregators map[string]*ServiceEndpoint
 	Servers     map[string]*ServiceEndpoint
 }
 
-// ServiceEndpoint contains connection information for a discovered and attested service.
+// ServiceEndpoint contains connection information for a discovered service.
+// TODO: replace with ServiceInfo
 type ServiceEndpoint struct {
 	HTTPEndpoint string
 	PublicKey    crypto.PublicKey
@@ -155,6 +141,7 @@ func NewServiceRegistry() *ServiceRegistry {
 }
 
 // RegisteredService contains registration data for a service instance.
+// TODO: replace with ServiceInfo
 type RegisteredService struct {
 	Type           ServiceType
 	Endpoint       string
@@ -164,7 +151,7 @@ type RegisteredService struct {
 	Signature      crypto.Signature
 }
 
-// ToServiceInfo converts a RegisteredService to ServiceInfo for discovery responses.
+// ToServiceInfo converts a RegisteredService to ServiceInfo.
 func (s *RegisteredService) ToServiceInfo() *ServiceInfo {
 	return &ServiceInfo{
 		ServiceType:  s.Type,

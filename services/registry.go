@@ -105,7 +105,7 @@ func (r *Registry) RegisterPublicRoutes(router chi.Router) {
 
 // handleAdminRegister handles authenticated registration for servers and aggregators.
 func (r *Registry) handleAdminRegister(w http.ResponseWriter, req *http.Request) {
-	r.handleRegister(w, req, false)
+	r.handleRegister(w, req)
 }
 
 // handleRegisterPublic handles public registration (clients only when admin auth is configured).
@@ -120,10 +120,10 @@ func (r *Registry) handleRegisterPublic(w http.ResponseWriter, req *http.Request
 		}
 	}
 
-	r.handleRegister(w, req, true)
+	r.handleRegister(w, req)
 }
 
-func (r *Registry) handleRegister(w http.ResponseWriter, req *http.Request, isPublic bool) {
+func (r *Registry) handleRegister(w http.ResponseWriter, req *http.Request) {
 	serviceType := ServiceType(chi.URLParam(req, "service_type"))
 	if !serviceType.Valid() {
 		http.Error(w, "invalid service type", http.StatusBadRequest)
@@ -251,16 +251,6 @@ func (t ServiceType) Valid() bool {
 	return false
 }
 
-// SerializeRegistrationRequest serializes a registration request for signing.
-func SerializeRegistrationRequest(r *ServiceRegistrationRequest) ([]byte, error) {
-	return json.Marshal(r)
-}
-
-// SerializeSecretExchangeRequest serializes a secret exchange request for signing.
-func SerializeSecretExchangeRequest(r *SecretExchangeRequest) ([]byte, error) {
-	return json.Marshal(r)
-}
-
 // ReportDataForService computes the attestation report data binding service identity.
 func ReportDataForService(exchangeKey []byte, httpEndpoint string, pubKey crypto.PublicKey) []byte {
 	hash := sha256.New()
@@ -294,28 +284,33 @@ func VerifyServiceInfo(source MeasurementSource, attestationProvider TEEProvider
 		HTTPEndpoint: info.HTTPEndpoint,
 		Attestation:  info.Attestation,
 	}
-	_, signer, err := (&protocol.Signed[ServiceRegistrationRequest]{
+
+	return VerifyRegistrationRequest(source, attestationProvider, (&protocol.Signed[ServiceRegistrationRequest]{
 		PublicKey: pubKey,
 		Signature: info.Signature,
 		Object:    req,
-	}).Recover()
+	}))
+}
+
+func VerifyRegistrationRequest(source MeasurementSource, attestationProvider TEEProvider, signedReq *protocol.Signed[ServiceRegistrationRequest]) (Measurements, error) {
+	rr, signer, err := signedReq.Recover()
 	if err != nil {
 		return nil, err
 	}
-	if signer.String() != info.PublicKey {
+	if signer.String() != rr.PublicKey {
 		return nil, errors.New("pubkey mismatch")
 	}
 
 	if attestationProvider == nil {
 		return nil, nil
 	}
-	if len(req.Attestation) == 0 {
+	if len(rr.Attestation) == 0 {
 		return nil, errors.New("no attestation data")
 	}
 
 	var reportData [64]byte
-	copy(reportData[:], ReportDataForService([]byte(req.ExchangeKey), req.HTTPEndpoint, crypto.PublicKey(req.PublicKey)))
-	measurements, err := attestationProvider.Verify(req.Attestation, reportData)
+	copy(reportData[:], ReportDataForService([]byte(rr.ExchangeKey), rr.HTTPEndpoint, crypto.PublicKey(rr.PublicKey)))
+	measurements, err := attestationProvider.Verify(rr.Attestation, reportData)
 	if err != nil {
 		return nil, fmt.Errorf("could not verify attestation: %w", err)
 	}

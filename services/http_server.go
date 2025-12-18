@@ -61,8 +61,7 @@ func (s *HTTPServer) RegisterRoutes(r chi.Router) {
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 
-	r.Get("/registration-data", s.handleRegistrationData)
-	r.Post("/exchange", s.handleSecretExchange)
+	r.Post("/register", func(w http.ResponseWriter, r *http.Request) { s.handleRegister(w, r, s) })
 	r.Post("/aggregate", s.handleAggregate)
 	r.Post("/partial-decryption", s.handlePartialDecryption)
 	r.Get("/round-broadcast/{round}", s.handleGetRoundBroadcast)
@@ -81,22 +80,16 @@ func (s *HTTPServer) Start(ctx context.Context) error {
 	return nil
 }
 
-func (s *HTTPServer) handleRegistrationData(w http.ResponseWriter, r *http.Request) {
-	data, err := s.baseService.RegistrationData()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	json.NewEncoder(w).Encode(data)
-}
-
 func (s *HTTPServer) selfPublicKey() string {
 	return s.publicKey().String()
 }
 
 func (s *HTTPServer) onServerDiscovered(info *ServiceInfo) error {
-	_, err := s.verifyAndStoreServer(info)
-	return err
+	if _, err := s.verifyAndStoreServer(info); err != nil {
+		return err
+	}
+
+	return s.sendRegistrationDirectly(info.HTTPEndpoint, ServerService)
 }
 
 func (s *HTTPServer) onAggregatorDiscovered(info *ServiceInfo) error {
@@ -120,11 +113,11 @@ func (s *HTTPServer) onClientDiscovered(info *ServiceInfo) error {
 		return err
 	}
 
-	if err := s.service.RegisterClient(pubKey, ecdhKey); err != nil {
+	if _, err = s.verifyAndStoreClient(info); err != nil {
 		return err
 	}
 
-	_, err = s.verifyAndStoreClient(info)
+	err = s.service.RegisterClient(pubKey, ecdhKey)
 	return err
 }
 
@@ -150,76 +143,6 @@ func (s *HTTPServer) handleRoundTransitions(ctx context.Context) {
 			s.mu.Unlock()
 		}
 	}
-}
-
-func (s *HTTPServer) handleSecretExchange(w http.ResponseWriter, r *http.Request) {
-	var signedReq protocol.Signed[SecretExchangeRequest]
-	if err := json.NewDecoder(r.Body).Decode(&signedReq); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	req, signer, err := signedReq.Recover()
-	if err != nil {
-		http.Error(w, fmt.Errorf("invalid signature: %w", err).Error(), http.StatusForbidden)
-		return
-	}
-
-	if signer.String() != req.PublicKey {
-		http.Error(w, "signer does not match claimed public key", http.StatusForbidden)
-		return
-	}
-
-	keyBytes, err := hex.DecodeString(req.ExchangeKey)
-	if err != nil {
-		http.Error(w, "invalid exchange key", http.StatusBadRequest)
-		return
-	}
-
-	ecdhKey, err := ecdh.P256().NewPublicKey(keyBytes)
-	if err != nil {
-		http.Error(w, "invalid ECDH key", http.StatusBadRequest)
-		return
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	switch req.ServiceType {
-	case ClientService:
-		registered, exists := s.registry.Clients[req.PublicKey]
-		if !exists {
-			http.Error(w, "client not found in registry", http.StatusForbidden)
-			return
-		}
-		if registered.ExchangeKey != req.ExchangeKey {
-			http.Error(w, "exchange key mismatch with attested key", http.StatusForbidden)
-			return
-		}
-
-		pubKey, _ := crypto.NewPublicKeyFromString(req.PublicKey)
-		if err := s.service.RegisterClient(pubKey, ecdhKey); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-	case ServerService:
-		registered, exists := s.registry.Servers[req.PublicKey]
-		if !exists {
-			http.Error(w, "server not found in registry", http.StatusForbidden)
-			return
-		}
-		if registered.ExchangeKey != req.ExchangeKey {
-			http.Error(w, "exchange key mismatch with attested key", http.StatusForbidden)
-			return
-		}
-
-	default:
-		http.Error(w, "unsupported service type", http.StatusBadRequest)
-		return
-	}
-
-	json.NewEncoder(w).Encode(&SecretExchangeResponse{Success: true})
 }
 
 func (s *HTTPServer) handleAggregate(w http.ResponseWriter, r *http.Request) {
@@ -305,7 +228,6 @@ func (s *HTTPServer) handlePartialDecryption(w http.ResponseWriter, r *http.Requ
 		}
 		s.roundBroadcasts[broadcast.RoundNumber] = signedBroadcast
 
-		// Invoke callback for round output monitoring
 		if s.roundOutputCallback != nil {
 			go s.roundOutputCallback(broadcast)
 		}

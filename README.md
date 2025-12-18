@@ -46,27 +46,220 @@ Servers collaborate to reconstruct messages:
 - **Anonymity Guarantees**: Unlinkability between rounds through fresh blinding
 - **TEE Attestation**: Optional TDX attestation for service verification
 
-## Protocol Flow
+## Getting Started
 
-1. **Message Preparation** (Client):
-   - Check if won slot in previous auction by comparing message hash
-   - Encode message at appropriate offset if auction was won
-   - XOR-blind message with one-time pads from all server shared secrets
-   - Field-blind auction IBF with server-specific pads
+### Installation
 
-2. **Aggregation**:
-   - Aggregators XOR message vectors from multiple clients
-   - Aggregators add auction vectors in the finite field
-   - Support multi-level aggregation for bandwidth optimization
+```bash
+go get github.com/flashbots/adcnet
+```
 
-3. **Unblinding** (Server):
-   - Each server computes its XOR blinding contribution from shared secrets
-   - Creates partial decryption for message reconstruction
+### Configuration
 
-4. **Message Reconstruction**:
-   - XOR all server blinding vectors with aggregate to recover messages
-   - Subtract all server auction blindings to recover IBF
-   - Decode auction IBF to determine next round's winners
+Services can be configured via YAML files or command-line flags. Config files allow storing credentials securely and simplify deployment.
+
+**Example server configuration (`server.yaml`):**
+
+```yaml
+http_addr: ":8081"
+registry_url: "http://localhost:8080"
+admin_token: "admin:secret"
+
+keys:
+  signing_key: ""     # Hex-encoded, generates if empty
+  exchange_key: ""    # Hex-encoded, generates if empty
+
+attestation:
+  use_tdx: false
+  measurements_url: ""
+
+server:
+  is_leader: true
+```
+
+**Example registry configuration (`registry.yaml`):**
+
+```yaml
+http_addr: ":8080"
+admin_token: "admin:secret"
+
+attestation:
+  use_tdx: false
+  measurements_url: ""
+
+protocol:
+  round_duration: 10s
+  message_length: 512000
+  auction_slots: 10
+  min_clients: 1
+```
+
+### Running the Demo
+
+The demo orchestrator runs a complete local deployment:
+
+```bash
+go run ./services/demo \
+  --clients=10 \
+  --aggregators=2 \
+  --servers=5 \
+  --round=10s \
+  --msg-length=512000 \
+  --admin-token="admin:secret"
+```
+
+## Running Standalone Services
+
+For production deployments, run services independently using the unified service command.
+
+### 1. Start the Registry
+
+```bash
+go run ./cmd/registry \
+  --addr=:8080 \
+  --admin-token="admin:secret" \
+  --measurements-url="https://example.com/measurements.json" \
+  --round=10s \
+  --msg-length=512000
+```
+
+### 2. Start Servers
+
+```bash
+# Leader server
+go run ./cmd/service \
+  --service-type=server \
+  --addr=:8081 \
+  --registry=http://localhost:8080 \
+  --admin-token="admin:secret" \
+  --leader
+
+# Additional servers
+go run ./cmd/service \
+  --service-type=server \
+  --addr=:8082 \
+  --registry=http://localhost:8080 \
+  --admin-token="admin:secret"
+```
+
+### 3. Start Aggregators
+
+```bash
+go run ./cmd/service \
+  --service-type=aggregator \
+  --addr=:8083 \
+  --registry=http://localhost:8080 \
+  --admin-token="admin:secret"
+```
+
+### 4. Start Clients
+
+```bash
+go run ./cmd/service \
+  --service-type=client \
+  --addr=:8084 \
+  --registry=http://localhost:8080
+```
+
+### Using Configuration Files
+
+Create a YAML config for each service:
+
+```yaml
+# server.yaml
+service_type: "server"
+http_addr: ":8081"
+registry_url: "http://localhost:8080"
+admin_token: "admin:secret"
+keys:
+  signing_key: ""     # Generated if empty
+  exchange_key: ""    # Generated if empty
+attestation:
+  use_tdx: true
+  measurements_url: "https://example.com/measurements.json"
+server:
+  is_leader: true
+```
+
+```bash
+go run ./cmd/service --config=server.yaml
+```
+
+### TEE Deployment
+
+The unified service command enables building a single binary for TEE VM images:
+
+```bash
+# Build single binary
+go build -o adcnet-service ./cmd/service
+
+# Run with different configurations
+./adcnet-service --config=/etc/adcnet/server.yaml
+./adcnet-service --config=/etc/adcnet/client.yaml
+```
+
+Enable TDX attestation:
+
+```bash
+go run ./cmd/service \
+  --service-type=server \
+  --tdx \
+  --tdx-url=http://attestation-service:8080 \
+  --registry=http://localhost:8080
+```
+
+
+### Service Registration
+
+All services self-register on startup:
+
+| Service Type | Endpoint | Auth Required |
+|--------------|----------|---------------|
+| Client | `POST /register/client` | No |
+| Server | `POST /admin/register/server` | Yes (Basic Auth) |
+| Aggregator | `POST /admin/register/aggregator` | Yes (Basic Auth) |
+
+Servers and aggregators include `admin_token` in their config for authentication.
+
+### TDX Attestation
+
+Enable TDX attestation for production deployments:
+
+```yaml
+# In config file:
+attestation:
+  use_tdx: true
+  tdx_remote_url: "http://attestation-service:8080"  # Optional
+  measurements_url: "https://example.com/measurements.json"
+```
+
+Or via flags:
+```bash
+go run ./cmd/server \
+  --tdx \
+  --tdx-url=http://attestation-service:8080 \
+  --measurements-url=https://example.com/measurements.json \
+  --registry=http://localhost:8080
+```
+
+### Basic Usage
+
+```go
+import (
+    "github.com/flashbots/adcnet/protocol"
+)
+
+config := &protocol.ADCNetConfig{
+    AuctionSlots:    100,
+    MessageLength:   1000,
+    MinClients:      3,
+    RoundDuration:   10 * time.Second,
+}
+
+client := protocol.NewClientService(config, signingKey, exchangeKey)
+client.RegisterServer(serverID, serverExchangePubkey)
+client.ScheduleMessageForNextRound([]byte("hello"), 10)
+```
 
 ## Package Structure
 
@@ -92,7 +285,6 @@ HTTP service implementations with:
 - Central registry for service discovery
 - TEE attestation verification
 - Signed message authentication
-- Admin-authenticated registration for servers/aggregators
 
 ### `cmd`
 Standalone CLI commands:
@@ -100,135 +292,6 @@ Standalone CLI commands:
 - `cmd/server`: ADCNet server
 - `cmd/aggregator`: Message aggregator
 - `cmd/client`: ADCNet client
-- `cmd/common`: Shared CLI utilities
-
-## Getting Started
-
-### Installation
-
-```bash
-go get github.com/flashbots/adcnet
-```
-
-### Running the Demo
-
-The demo orchestrator runs a complete local deployment with automatic service registration:
-
-```bash
-go run ./services/demo \
-  --clients=10 \
-  --aggregators=2 \
-  --servers=5 \
-  --round=10s \
-  --msg-length=512000 \
-  --admin-token="admin:secret"
-```
-
-### Running Standalone Services
-
-For production deployments, run services independently:
-
-#### 1. Start the Registry
-
-```bash
-go run ./cmd/registry \
-  --addr=:8080 \
-  --admin-token="admin:secret" \
-  --measurements-url="https://example.com/measurements.json" \
-  --round=10s \
-  --msg-length=512000
-```
-
-#### 2. Start Servers
-
-Servers must be registered by an admin before they can participate:
-
-```bash
-# Start the server (it will wait for admin registration)
-go run ./cmd/server \
-  --addr=:8081 \
-  --registry=http://localhost:8080 \
-  --leader
-```
-
-#### 3. Start Aggregators
-
-Aggregators must also be registered by an admin:
-
-```bash
-go run ./cmd/aggregator \
-  --addr=:8082 \
-  --registry=http://localhost:8080
-```
-
-#### 4. Start Clients
-
-Clients self-register via the public endpoint:
-
-```bash
-go run ./cmd/client \
-  --addr=:8083 \
-  --registry=http://localhost:8080
-```
-
-### Service Registration
-
-The registry provides two registration paths:
-
-| Endpoint | Auth Required | Service Types |
-|----------|---------------|---------------|
-| `POST /register/client` | No | Clients only |
-| `POST /admin/register/{type}` | Yes (Basic Auth) | Servers, Aggregators |
-
-When `--admin-token` is configured, servers and aggregators must be registered through the admin endpoint with basic authentication.
-
-### TDX Attestation
-
-Enable TDX attestation for production deployments:
-
-```bash
-# Local TDX device
-go run ./cmd/server --tdx --registry=http://localhost:8080
-
-# Remote TDX attestation service
-go run ./cmd/server \
-  --tdx \
-  --tdx-url=http://attestation-service:8080 \
-  --registry=http://localhost:8080
-```
-
-### Measurements Configuration
-
-Measurements define acceptable TEE configurations:
-
-```bash
-# Remote measurements (production)
---measurements-url="https://example.com/measurements.json"
-
-# Demo mode uses static measurements compatible with dummy attestation
-# (no flag needed - this is the default in demo)
-```
-
-### Basic Usage
-
-```go
-import (
-    "github.com/flashbots/adcnet/protocol"
-)
-
-config := &protocol.ADCNetConfig{
-    AuctionSlots:    100,
-    MessageLength:   1000,
-    MinClients:      3,
-    RoundDuration:   10 * time.Second,
-}
-
-client := protocol.NewClientService(config, signingKey, exchangeKey)
-// Register with servers to establish shared secrets
-client.RegisterServer(serverID, serverExchangePubkey)
-// Schedule message for next round
-client.ScheduleMessageForNextRound([]byte("hello"), 10)
-```
 
 ## Security Properties
 

@@ -60,14 +60,15 @@ func main() {
 }
 
 func printDeploymentInfo(config *OrchestratorConfig, o *Orchestrator) {
-	fmt.Println("\n╔══════════════════════════════════════════════════════════════╗")
-	fmt.Println("║              ADCNet Demo Deployment Running                  ║")
-	fmt.Println("╠══════════════════════════════════════════════════════════════╣")
-	fmt.Printf("║  Clients:      %-4d                                          ║\n", config.NumClients)
-	fmt.Printf("║  Aggregators:  %-4d                                          ║\n", config.NumAggregators)
-	fmt.Printf("║  Servers:      %-4d (all required for message recovery)      ║\n", config.NumServers)
-	fmt.Printf("║  Round:        %-10v                                    ║\n", config.RoundDuration)
-	fmt.Printf("║  Message size: %-6d bytes                                  ║\n", config.MessageLength)
+	var tout string
+	tout += "\n╔══════════════════════════════════════════════════════════════╗"
+	tout += "\n║              ADCNet Demo Deployment Running                  ║"
+	tout += "\n╠══════════════════════════════════════════════════════════════╣"
+	tout += fmt.Sprintf("\n║  Clients:      %-4d                                          ║", config.NumClients)
+	tout += fmt.Sprintf("\n║  Aggregators:  %-4d                                          ║", config.NumAggregators)
+	tout += fmt.Sprintf("\n║  Servers:      %-4d (all required for message recovery)      ║", config.NumServers)
+	tout += fmt.Sprintf("\n║  Round:        %-10v                                    ║", config.RoundDuration)
+	tout += fmt.Sprintf("\n║  Message size: %-6d bytes                                  ║", config.MessageLength)
 
 	attestMode := "Dummy"
 	if config.UseTDX {
@@ -77,18 +78,19 @@ func printDeploymentInfo(config *OrchestratorConfig, o *Orchestrator) {
 			attestMode = "Local TDX"
 		}
 	}
-	fmt.Printf("║  Attestation:  %-10s                                    ║\n", attestMode)
+	tout += fmt.Sprintf("\n║  Attestation:  %-10s                                    ║", attestMode)
 
 	measureMode := "Demo Static"
 	if config.MeasurementsURL != "" {
 		measureMode = "Remote"
 	}
-	fmt.Printf("║  Measurements: %-10s                                   ║\n", measureMode)
+	tout += fmt.Sprintf("\n║  Measurements: %-10s                                   ║", measureMode)
 
-	fmt.Println("╠══════════════════════════════════════════════════════════════╣")
-	fmt.Printf("║  Registry:     http://localhost:%d                         ║\n", config.BasePort-1)
-	fmt.Println("╠══════════════════════════════════════════════════════════════╣")
-	fmt.Println("║  Round outputs will be printed as they complete.            ║")
-	fmt.Println("║  Press Ctrl+C to shutdown.                                  ║")
-	fmt.Println("╚══════════════════════════════════════════════════════════════╝")
+	tout += ("\n╠══════════════════════════════════════════════════════════════╣")
+	tout += fmt.Sprintf("\n║  Registry:     http://localhost:%d                         ║", config.BasePort-1)
+	tout += "\n╠══════════════════════════════════════════════════════════════╣"
+	tout += "\n║  Round outputs will be printed as they complete.             ║"
+	tout += "\n║  Press Ctrl+C to shutdown.                                   ║"
+	tout += "\n╚══════════════════════════════════════════════════════════════╝"
+	fmt.Println(tout)
 }
