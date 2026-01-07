@@ -18,16 +18,14 @@ func DeriveBlindingVector(sharedSecrets []SharedKey, round uint32, nEls int32, f
 	dstBytesBuf := make([]byte, bytesTotal)
 
 	res := make([]*big.Int, nEls)
-
 	for i := range res {
 		res[i] = new(big.Int)
 	}
 
 	roundKeyBuf := make([]byte, 4+len(sharedSecrets[0]))
-	binary.BigEndian.PutUint32(roundKeyBuf[:4], uint32(round))
+	binary.BigEndian.PutUint32(roundKeyBuf[:4], round)
 
 	workingEl := big.NewInt(0)
-
 	words := make([]big.Word, bytesPerElement*8/bits.UintSize)
 
 	for _, sharedSecret := range sharedSecrets {
@@ -63,7 +61,7 @@ func DeriveXorBlindingVector(sharedSecrets []SharedKey, round uint32, nBytes int
 	res := make([]byte, nBytes)
 
 	roundKeyBuf := make([]byte, 4+len(sharedSecrets[0]))
-	binary.BigEndian.PutUint32(roundKeyBuf[:4], uint32(round))
+	binary.BigEndian.PutUint32(roundKeyBuf[:4], round)
 
 	for _, sharedSecret := range sharedSecrets {
 		copy(roundKeyBuf[4:], sharedSecret)

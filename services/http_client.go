@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdh"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math/rand"
@@ -16,10 +15,12 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 )
 
-// HTTPClient wraps the protocol ClientService with HTTP endpoints and registry integration.
+// HTTPClient wraps the protocol ClientService with HTTP endpoints.
 type HTTPClient struct {
 	*baseService
 	service *protocol.ClientService
+
+	messageToSend *HTTPClientMessage
 }
 
 // NewHTTPClient creates a client service that registers with a central registry.
@@ -33,8 +34,9 @@ func NewHTTPClient(config *ServiceConfig, signingKey crypto.PrivateKey, exchange
 	service := protocol.NewClientService(config.ADCNetConfig, signingKey, exchangeKey)
 
 	return &HTTPClient{
-		baseService: base,
-		service:     service,
+		baseService:   base,
+		service:       service,
+		messageToSend: nil,
 	}, nil
 }
 
@@ -43,7 +45,63 @@ func (c *HTTPClient) RegisterRoutes(r chi.Router) {
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 
-	r.Post("/round-broadcast", c.handleRoundBroadcast)
+	r.Post("/message", c.handleMessage)
+	r.Post("/encrypted-message", c.handleEncryptedMessage)
+}
+
+type HTTPClientMessage struct {
+	// Note: no integrity guarantees for the message. Should be using authenticated encryption at the protcol level.
+	Message []byte
+	Value   int
+}
+
+func (c *HTTPClient) handleEncryptedMessage(w http.ResponseWriter, r *http.Request) {
+	var cipherReq crypto.EncryptedMessage
+	if err := json.NewDecoder(r.Body).Decode(&cipherReq); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	plaintextMsg, err := crypto.Decrypt(c.exchangeKey, &cipherReq)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	var msg HTTPClientMessage
+	if err := json.NewDecoder(bytes.NewBuffer(plaintextMsg)).Decode(&msg); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	c.mu.Lock()
+	if c.messageToSend != nil {
+		c.mu.Unlock()
+		http.Error(w, "message already scheduled", http.StatusBadRequest)
+		return
+	}
+	c.messageToSend = &msg
+	c.mu.Unlock()
+
+	w.WriteHeader(http.StatusOK)
+}
+
+func (c *HTTPClient) handleMessage(w http.ResponseWriter, r *http.Request) {
+	var msg HTTPClientMessage
+	if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	c.mu.Lock()
+	if c.messageToSend != nil {
+		c.mu.Unlock()
+		http.Error(w, "message already scheduled", http.StatusBadRequest)
+		return
+	}
+	c.messageToSend = &msg
+	c.mu.Unlock()
+
+	w.WriteHeader(http.StatusOK)
 }
 
 // Start registers with the central registry and begins service operations.
@@ -63,18 +121,15 @@ func (c *HTTPClient) selfPublicKey() string {
 	return c.publicKey().String()
 }
 
-func (c *HTTPClient) onServerDiscovered(info *ServiceInfo) error {
-	pubKey, err := crypto.NewPublicKeyFromString(info.PublicKey)
+func (c *HTTPClient) onServerDiscovered(signed *protocol.Signed[RegisteredService]) error {
+	svc := signed.Object
+
+	pubKey, err := svc.ParsePublicKey()
 	if err != nil {
 		return err
 	}
 
-	keyBytes, err := hex.DecodeString(info.ExchangeKey)
-	if err != nil {
-		return err
-	}
-
-	ecdhKey, err := ecdh.P256().NewPublicKey(keyBytes)
+	ecdhKey, err := ParseExchangeKey(svc.ExchangeKey)
 	if err != nil {
 		return err
 	}
@@ -84,25 +139,21 @@ func (c *HTTPClient) onServerDiscovered(info *ServiceInfo) error {
 		return err
 	}
 
-	if _, err := c.verifyAndStoreServer(info); err != nil {
+	if err := c.verifyAndStoreServer(signed); err != nil {
 		return err
 	}
 
-	// Just to be sure, register with the server directly
-	return c.sendRegistrationDirectly(info.HTTPEndpoint, ClientService)
+	return c.sendRegistrationDirectly(svc.HTTPEndpoint)
 }
 
-func (c *HTTPClient) onAggregatorDiscovered(info *ServiceInfo) error {
-	_, err := c.verifyAndStoreAggregator(info)
-	if err != nil {
+func (c *HTTPClient) onAggregatorDiscovered(signed *protocol.Signed[RegisteredService]) error {
+	if err := c.verifyAndStoreAggregator(signed); err != nil {
 		return err
 	}
-
-	// Just to be sure, register with the aggregator directly
-	return c.sendRegistrationDirectly(info.HTTPEndpoint, ClientService)
+	return c.sendRegistrationDirectly(signed.Object.HTTPEndpoint)
 }
 
-func (c *HTTPClient) onClientDiscovered(info *ServiceInfo) error {
+func (c *HTTPClient) onClientDiscovered(signed *protocol.Signed[RegisteredService]) error {
 	return nil
 }
 
@@ -114,6 +165,11 @@ func (c *HTTPClient) handleRoundTransitions(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case round := <-roundChan:
+			// Poll for previous round's broadcast when entering client phase
+			if round.Context == protocol.ClientRoundContext && round.Number > 1 {
+				c.pollRoundBroadcast(round.Number - 1)
+			}
+
 			if round.Context != protocol.ClientRoundContext {
 				continue
 			}
@@ -121,16 +177,78 @@ func (c *HTTPClient) handleRoundTransitions(ctx context.Context) {
 			c.mu.Lock()
 			c.currentRound = round
 			c.service.AdvanceToRound(round)
-
-			pubKey := c.publicKey()
-			if rand.Float32() > 0.5 {
-				msg := []byte(fmt.Sprintf("hello adcnet round %d from %s!", round.Number, pubKey.String()[:16]))
-				c.service.ScheduleMessageForNextRound(msg, 10)
+			if c.messageToSend != nil {
+				err := c.service.ScheduleMessageForNextRound(c.messageToSend.Message, uint32(c.messageToSend.Value))
+				c.messageToSend = nil
+				if err != nil {
+					c.mu.Unlock()
+					fmt.Printf("could not schedule message: %v\n", err)
+					return
+				}
 			}
 			c.mu.Unlock()
 
-			c.sendRoundMessages()
+			if err := c.sendRoundMessages(); err != nil {
+				fmt.Printf("Failed to send round messages: %v\n", err)
+			}
 		}
+	}
+}
+
+// pollRoundBroadcast fetches the broadcast for a completed round from any available server.
+func (c *HTTPClient) pollRoundBroadcast(roundNumber int) {
+	c.mu.RLock()
+	servers := make([]*protocol.Signed[RegisteredService], 0, len(c.registry.Servers))
+	for _, srv := range c.registry.Servers {
+		servers = append(servers, srv)
+	}
+	c.mu.RUnlock()
+
+	if len(servers) == 0 {
+		return
+	}
+
+	for _, srv := range servers {
+		// TODO: should poll the leader
+		url := fmt.Sprintf("%s/round-broadcast/%d", srv.Object.HTTPEndpoint, roundNumber)
+		resp, err := c.httpClient.Get(url)
+		if err != nil {
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			continue
+		}
+
+		var broadcastResp RoundBroadcastResponse
+		if err := json.NewDecoder(resp.Body).Decode(&broadcastResp); err != nil {
+			resp.Body.Close()
+			continue
+		}
+		resp.Body.Close()
+
+		if broadcastResp.Broadcast == nil {
+			continue
+		}
+
+		broadcast, signer, err := broadcastResp.Broadcast.Recover()
+		if err != nil {
+			continue
+		}
+
+		c.mu.Lock()
+		if _, exists := c.registry.Servers[signer.String()]; !exists {
+			c.mu.Unlock()
+			continue
+		}
+
+		if err := c.service.ProcessRoundBroadcast(broadcast); err != nil {
+			c.mu.Unlock()
+			continue
+		}
+		c.mu.Unlock()
+		return
 	}
 }
 
@@ -143,7 +261,7 @@ func (c *HTTPClient) sendRoundMessages() error {
 	req := &ClientMessageRequest{Messages: []*protocol.Signed[protocol.ClientRoundMessage]{messages}}
 
 	c.mu.RLock()
-	aggregators := make([]*ServiceEndpoint, 0, len(c.registry.Aggregators))
+	aggregators := make([]*protocol.Signed[RegisteredService], 0, len(c.registry.Aggregators))
 	for _, agg := range c.registry.Aggregators {
 		aggregators = append(aggregators, agg)
 	}
@@ -151,15 +269,21 @@ func (c *HTTPClient) sendRoundMessages() error {
 
 	if len(aggregators) > 0 {
 		agg := aggregators[rand.Int()%len(aggregators)]
-		c.sendToAggregator(agg, req)
+		if err := c.sendToAggregator(agg, req); err != nil {
+			return err
+		}
 	}
 
 	return nil
 }
 
-func (c *HTTPClient) sendToAggregator(agg *ServiceEndpoint, req *ClientMessageRequest) error {
-	body, _ := json.Marshal(req)
-	resp, err := c.httpClient.Post(agg.HTTPEndpoint+"/client-messages", "application/json", bytes.NewReader(body))
+func (c *HTTPClient) sendToAggregator(agg *protocol.Signed[RegisteredService], req *ClientMessageRequest) error {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("marshaling request: %w", err)
+	}
+
+	resp, err := c.httpClient.Post(agg.Object.HTTPEndpoint+"/client-messages", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -169,40 +293,6 @@ func (c *HTTPClient) sendToAggregator(agg *ServiceEndpoint, req *ClientMessageRe
 		return fmt.Errorf("aggregator returned status %d", resp.StatusCode)
 	}
 	return nil
-}
-
-func (c *HTTPClient) handleRoundBroadcast(w http.ResponseWriter, r *http.Request) {
-	var req RoundBroadcastResponse
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	if req.Broadcast == nil {
-		http.Error(w, "missing broadcast", http.StatusBadRequest)
-		return
-	}
-
-	broadcast, signer, err := req.Broadcast.Recover()
-	if err != nil {
-		http.Error(w, fmt.Sprintf("invalid signature: %v", err), http.StatusBadRequest)
-		return
-	}
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if _, exists := c.registry.Servers[signer.String()]; !exists {
-		http.Error(w, "server not registered or not attested", http.StatusForbidden)
-		return
-	}
-
-	if err := c.service.ProcessRoundBroadcast(broadcast); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	w.WriteHeader(http.StatusOK)
 }
 
 // PublicKey returns the client's signing public key.

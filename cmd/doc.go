@@ -2,23 +2,35 @@
 //
 // # Commands
 //
-// service: Unified command that runs client, server, or aggregator based on
-// configuration. Suitable for building a single TEE VM image.
+// demo-gateway: Serves the demo website and API for visualizing ADCNet.
+// Connects to the registry, streams round results, and proxies message
+// submissions through a demo client.
 //
-//	go run ./cmd/service --service-type=server --registry=http://localhost:8080
-//	go run ./cmd/service --config=config.yaml
+//	go run ./cmd/demo-gateway --registry=http://localhost:7999
+//	go run ./cmd/demo-gateway --registry=http://localhost:7999 --static=./web/dist
+//
+// multiservice: Unified command that runs client, server, or aggregator based
+// on configuration. Suitable for building a single TEE VM image.
+//
+//	go run ./cmd/multiservice --service-type=server --registry=http://localhost:8080
+//	go run ./cmd/multiservice --config=config.yaml
 //
 // registry: Central service discovery and configuration distribution.
 //
 //	go run ./cmd/registry --addr=:8080 --admin-token=admin:secret
 //
+// demo: Local orchestrator that runs a complete ADCNet deployment in a single
+// process for testing and development.
+//
+//	go run ./services/demo --clients=10 --servers=3 --round=5s
+//
 // # HTTP Configuration Mode
 //
-// The service command supports waiting for configuration via HTTP POST,
+// The multiservice command supports waiting for configuration via HTTP POST,
 // useful for TEE deployments where configuration is provided after boot:
 //
 //	# Start service in wait mode
-//	go run ./cmd/service --wait-config --addr=:8080
+//	go run ./cmd/multiservice --wait-config --addr=:8080
 //
 //	# Submit configuration to start the service
 //	curl -X POST http://localhost:8080/config -d @config.yaml
@@ -43,4 +55,17 @@
 //	  measurements_url: ""
 //	server:
 //	  is_leader: true
+//
+// # Demo Website
+//
+// The demo-gateway command serves a web dashboard that visualizes:
+//   - Network topology (servers, aggregators, clients)
+//   - Round phase progression (client → aggregation → server → broadcast)
+//   - Live message stream from decoded rounds
+//   - Message submission with auction bidding
+//   - Protocol configuration
+//
+// The dashboard connects via Server-Sent Events for real-time updates.
+// Static files can be served from a directory (--static) or the gateway
+// serves an embedded minimal dashboard.
 package cmd

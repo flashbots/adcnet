@@ -37,7 +37,8 @@ func TestBlindingClient(t *testing.T) {
 		Size:        8,
 	}).EncodeToChunk())
 
-	msgEls := EncodeMessageToFieldElements(AuctionResult{ShouldSend: true, MessageStartIndex: 0}, make([]byte, 20), []byte{10})
+	msgEls := make([]byte, 20)
+	copy(msgEls[0:], []byte{10})
 	require.Len(t, msgEls, 20)
 	expectedMsg := make([]byte, 20)
 	expectedMsg[0] = 0xa
@@ -144,7 +145,10 @@ func TestE2E(t *testing.T) {
 	require.Len(t, talkingClients, 2, recoveredChunks)
 
 	agg := &AggregatorMessager{Config: config}
-	aggregatedMessage, err := agg.AggregateClientMessages(2, nil, clientMsgs, clientPubkeys)
+
+	verifiedMessages, err := VerifyClientMessages(clientMsgs)
+	require.NoError(t, err)
+	aggregatedMessage, err := agg.AggregateVerifiedMessages(2, nil, verifiedMessages, clientPubkeys)
 	require.NoError(t, err)
 
 	partialDecryptionMessages := make([]*ServerPartialDecryptionMessage, len(servers))

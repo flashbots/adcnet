@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdh"
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
+	"io"
+	mrand "math/rand"
 	"net/http"
 	"sync"
 	"time"
@@ -168,7 +172,11 @@ func (o *Orchestrator) deployRegistry() error {
 		MeasurementSource:   o.measurementSource,
 		AdminToken:          o.config.AdminToken,
 	}
-	o.registry = services.NewRegistry(registryConfig, o.adcConfig)
+	var err error
+	o.registry, err = services.NewRegistry(registryConfig, o.adcConfig)
+	if err != nil {
+		return err
+	}
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -457,6 +465,49 @@ func (o *Orchestrator) SubscribeToRoundOutputs() <-chan RoundOutput {
 		}
 	}()
 	return ch
+}
+
+func (o *Orchestrator) SendMessages() {
+	roundCoord := protocol.NewLocalRoundCoordinator(o.adcConfig.RoundDuration)
+	roundCoord.Start(o.ctx)
+	roundChan := roundCoord.SubscribeToRounds(o.ctx)
+
+	for {
+		select {
+		case <-o.ctx.Done():
+			return
+		case round := <-roundChan:
+			// Poll for previous round's broadcast when entering client phase
+			if round.Context == protocol.ServerPartialRoundContext {
+				o.SendMessageToRandomClients(4)
+			}
+		}
+	}
+}
+
+func (o *Orchestrator) SendMessageToRandomClients(nClients int) error {
+	clientsPerm := mrand.Perm(len(o.clients) - 1) // Reserve the last client for demo users
+
+	for _, ic := range clientsPerm[0:nClients] {
+		client := o.clients[ic]
+		req := services.HTTPClientMessage{Message: []byte(fmt.Sprintf("Hello from %s!", client.PublicKey.String()[:16])), Value: 10}
+		body, err := json.Marshal(req)
+		if err != nil {
+			return fmt.Errorf("could not marshal message: %w", err)
+		}
+
+		resp, err := o.httpClient.Post(client.HTTPAddr+"/message", "application/json", bytes.NewReader(body))
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			respBody, _ := io.ReadAll(resp.Body)
+			return fmt.Errorf("sending message failed (%d): %s", resp.StatusCode, string(respBody))
+		}
+	}
+	return nil
 }
 
 // Shutdown stops all services and the registry.

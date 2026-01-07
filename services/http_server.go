@@ -4,10 +4,10 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdh"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 
 	"github.com/flashbots/adcnet/crypto"
 	"github.com/flashbots/adcnet/protocol"
@@ -18,7 +18,7 @@ import (
 // RoundOutputCallback is invoked when a round broadcast is finalized.
 type RoundOutputCallback func(*protocol.RoundBroadcast)
 
-// HTTPServer wraps the protocol ServerService with HTTP endpoints and registry integration.
+// HTTPServer wraps the protocol ServerService with HTTP endpoints.
 type HTTPServer struct {
 	*baseService
 	service  *protocol.ServerService
@@ -84,41 +84,35 @@ func (s *HTTPServer) selfPublicKey() string {
 	return s.publicKey().String()
 }
 
-func (s *HTTPServer) onServerDiscovered(info *ServiceInfo) error {
-	if _, err := s.verifyAndStoreServer(info); err != nil {
+func (s *HTTPServer) onServerDiscovered(signed *protocol.Signed[RegisteredService]) error {
+	if err := s.verifyAndStoreServer(signed); err != nil {
 		return err
 	}
-
-	return s.sendRegistrationDirectly(info.HTTPEndpoint, ServerService)
+	return s.sendRegistrationDirectly(signed.Object.HTTPEndpoint)
 }
 
-func (s *HTTPServer) onAggregatorDiscovered(info *ServiceInfo) error {
-	_, err := s.verifyAndStoreAggregator(info)
-	return err
+func (s *HTTPServer) onAggregatorDiscovered(signed *protocol.Signed[RegisteredService]) error {
+	return s.verifyAndStoreAggregator(signed)
 }
 
-func (s *HTTPServer) onClientDiscovered(info *ServiceInfo) error {
-	pubKey, err := crypto.NewPublicKeyFromString(info.PublicKey)
+func (s *HTTPServer) onClientDiscovered(signed *protocol.Signed[RegisteredService]) error {
+	svc := signed.Object
+
+	pubKey, err := svc.ParsePublicKey()
 	if err != nil {
 		return err
 	}
 
-	keyBytes, err := hex.DecodeString(info.ExchangeKey)
+	ecdhKey, err := ParseExchangeKey(svc.ExchangeKey)
 	if err != nil {
 		return err
 	}
 
-	ecdhKey, err := ecdh.P256().NewPublicKey(keyBytes)
-	if err != nil {
+	if err := s.verifyAndStoreClient(signed); err != nil {
 		return err
 	}
 
-	if _, err = s.verifyAndStoreClient(info); err != nil {
-		return err
-	}
-
-	err = s.service.RegisterClient(pubKey, ecdhKey)
-	return err
+	return s.service.RegisterClient(pubKey, ecdhKey)
 }
 
 func (s *HTTPServer) handleRoundTransitions(ctx context.Context) {
@@ -152,17 +146,19 @@ func (s *HTTPServer) handleAggregate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.currentRound.Context >= protocol.ServerPartialRoundContext {
-		http.Error(w, "aggregate submitted too late", http.StatusBadRequest)
+	msg, signer, err := req.Message.Recover()
+	if err != nil {
+		http.Error(w, fmt.Sprintf("invalid signature: %v", err), http.StatusBadRequest)
 		return
 	}
 
-	msg, signer, err := req.Message.Recover()
-	if err != nil {
-		http.Error(w, fmt.Errorf("could not recover signature: %w", err).Error(), http.StatusBadRequest)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	currentRound := s.currentRound
+
+	if currentRound.Context >= protocol.ServerPartialRoundContext {
+		http.Error(w, "aggregate submitted too late", http.StatusBadRequest)
 		return
 	}
 
@@ -194,17 +190,21 @@ func (s *HTTPServer) handlePartialDecryption(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.roundBroadcasts[s.currentRound.Number] != nil {
-		json.NewEncoder(w).Encode(&RoundBroadcastResponse{Broadcast: s.roundBroadcasts[s.currentRound.Number]})
+	msg, signer, err := req.Message.Recover()
+	if err != nil {
+		http.Error(w, fmt.Sprintf("invalid signature: %v", err), http.StatusBadRequest)
 		return
 	}
 
-	msg, signer, err := req.Message.Recover()
-	if err != nil {
-		http.Error(w, fmt.Errorf("could not recover signature: %w", err).Error(), http.StatusBadRequest)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	currentRound := s.currentRound
+
+	if s.roundBroadcasts[currentRound.Number] != nil {
+		if err := json.NewEncoder(w).Encode(&RoundBroadcastResponse{Broadcast: s.roundBroadcasts[currentRound.Number]}); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
 		return
 	}
 
@@ -231,18 +231,33 @@ func (s *HTTPServer) handlePartialDecryption(w http.ResponseWriter, r *http.Requ
 		if s.roundOutputCallback != nil {
 			go s.roundOutputCallback(broadcast)
 		}
-
-		if s.isLeader {
-			go s.shareBroadcast(signedBroadcast)
-		}
 	}
 
-	json.NewEncoder(w).Encode(&RoundBroadcastResponse{Broadcast: signedBroadcast})
+	if err := json.NewEncoder(w).Encode(&RoundBroadcastResponse{Broadcast: signedBroadcast}); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
 }
 
 func (s *HTTPServer) handleGetRoundBroadcast(w http.ResponseWriter, r *http.Request) {
+	roundParam := chi.URLParam(r, "round")
+	roundNumber, err := strconv.Atoi(roundParam)
+	if err != nil {
+		http.Error(w, "invalid round number", http.StatusBadRequest)
+		return
+	}
+
+	var broadcast *protocol.Signed[protocol.RoundBroadcast]
+
 	s.mu.RLock()
-	broadcast := s.roundBroadcasts[s.currentRound.Number]
+	if roundNumber == 0 {
+		// Fetch latest
+		var exists bool
+		if broadcast, exists = s.roundBroadcasts[s.currentRound.Number]; !exists && s.currentRound.Number > 1 {
+			broadcast = s.roundBroadcasts[s.currentRound.Number-1]
+		}
+	} else {
+		broadcast = s.roundBroadcasts[roundNumber]
+	}
 	s.mu.RUnlock()
 
 	if broadcast == nil {
@@ -250,42 +265,27 @@ func (s *HTTPServer) handleGetRoundBroadcast(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	json.NewEncoder(w).Encode(&RoundBroadcastResponse{Broadcast: broadcast})
+	if err := json.NewEncoder(w).Encode(&RoundBroadcastResponse{Broadcast: broadcast}); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
 }
 
 func (s *HTTPServer) sharePartialDecryption(partial *protocol.Signed[protocol.ServerPartialDecryptionMessage]) {
 	req := &PartialDecryptionRequest{Message: partial}
-	body, _ := json.Marshal(req)
+	body, err := json.Marshal(req)
+	if err != nil {
+		return
+	}
 
 	s.mu.RLock()
-	servers := make([]*ServiceEndpoint, 0, len(s.registry.Servers))
+	servers := make([]*protocol.Signed[RegisteredService], 0, len(s.registry.Servers))
 	for _, srv := range s.registry.Servers {
 		servers = append(servers, srv)
 	}
 	s.mu.RUnlock()
 
 	for _, srv := range servers {
-		resp, err := s.httpClient.Post(srv.HTTPEndpoint+"/partial-decryption", "application/json", bytes.NewReader(body))
-		if err != nil {
-			continue
-		}
-		resp.Body.Close()
-	}
-}
-
-func (s *HTTPServer) shareBroadcast(broadcast *protocol.Signed[protocol.RoundBroadcast]) {
-	req := &RoundBroadcastResponse{Broadcast: broadcast}
-	body, _ := json.Marshal(req)
-
-	s.mu.RLock()
-	clients := make([]*ServiceEndpoint, 0, len(s.registry.Clients))
-	for _, c := range s.registry.Clients {
-		clients = append(clients, c)
-	}
-	s.mu.RUnlock()
-
-	for _, client := range clients {
-		resp, err := s.httpClient.Post(client.HTTPEndpoint+"/round-broadcast", "application/json", bytes.NewReader(body))
+		resp, err := s.httpClient.Post(srv.Object.HTTPEndpoint+"/partial-decryption", "application/json", bytes.NewReader(body))
 		if err != nil {
 			continue
 		}
