@@ -1,7 +1,6 @@
 package protocol
 
 import (
-	"crypto/ecdh"
 	"encoding/json"
 	"errors"
 	"io"
@@ -94,6 +93,7 @@ func (m *AggregatedClientMessages) UnionInplace(o *AggregatedClientMessages) (*A
 	if m.AllServerIds == nil {
 		m.AllServerIds = o.AllServerIds
 	} else if !slices.Equal(m.AllServerIds, o.AllServerIds) {
+
 		return nil, errors.New("mismatching share servers")
 	}
 
@@ -155,25 +155,6 @@ type RoundBroadcast struct {
 	RoundNumber   int
 	AuctionVector *blind_auction.IBFVector
 	MessageVector []byte
-}
-
-// ClientRegistrationBlob contains client registration information.
-type ClientRegistrationBlob struct {
-	SigningPublicKey  crypto.PublicKey `json:"signing_public_key"`
-	ExchangePublicKey *ecdh.PublicKey  `json:"exchange_public_key"`
-}
-
-// AggregatorRegistrationBlob registers an aggregator with servers during setup.
-type AggregatorRegistrationBlob struct {
-	SigningPublicKey crypto.PublicKey `json:"signing_public_key"`
-	Level            uint32           `json:"level"`
-}
-
-// ServerRegistrationBlob registers a server in the network during setup.
-type ServerRegistrationBlob struct {
-	SigningPublicKey  crypto.PublicKey `json:"signing_public_key"`
-	ExchangePublicKey *ecdh.PublicKey  `json:"exchange_public_key"`
-	IsLeader          bool             `json:"is_leader"`
 }
 
 // UnmarshalMessage deserializes a message from JSON.

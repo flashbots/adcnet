@@ -89,7 +89,6 @@ func main() {
 	)
 	flag.Parse()
 
-	// isFlagSet checks if a flag was explicitly provided on command line
 	isFlagSet := func(name string) bool {
 		found := false
 		flag.Visit(func(f *flag.Flag) {
@@ -149,7 +148,6 @@ func main() {
 	}
 }
 
-// waitForConfig starts an HTTP server and waits for configuration via POST.
 func waitForConfig(ctx context.Context, addr string) (*common.Config, error) {
 	configCh := make(chan *common.Config, 1)
 	errCh := make(chan error, 1)
@@ -240,7 +238,7 @@ func applyFlagOverrides(cfg *common.Config, serviceType, addr, registryURL, admi
 	if addrExplicit {
 		cfg.HTTPAddr = addr
 	} else if cfg.HTTPAddr == "" {
-		cfg.HTTPAddr = addr // Use default
+		cfg.HTTPAddr = addr
 	}
 	if registryURL != "" {
 		cfg.RegistryURL = registryURL
@@ -310,16 +308,10 @@ func run(ctx context.Context, cfg *common.Config) error {
 	}
 
 	r := chi.NewRouter()
-	r.Use(middleware.Logger)
-	r.Use(middleware.Recoverer)
-	r.Use(middleware.Timeout(30 * time.Second))
-	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
-	})
 
 	var starter func(context.Context) error
 
+	// Register service routes FIRST (they add middleware)
 	switch cfg.ServiceType {
 	case "client":
 		client, err := services.NewHTTPClient(svcConfig, signingKey, exchangeKey)
@@ -346,6 +338,12 @@ func run(ctx context.Context, cfg *common.Config) error {
 		server.RegisterRoutes(r)
 		starter = server.Start
 	}
+
+	// Add health endpoint AFTER service routes (middleware already registered)
+	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	})
 
 	httpServer := &http.Server{
 		Addr:         cfg.HTTPAddr,

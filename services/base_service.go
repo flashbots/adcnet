@@ -19,9 +19,9 @@ import (
 
 // discoveryHandler processes discovered services during the discovery loop.
 type discoveryHandler interface {
-	onServerDiscovered(*ServiceInfo) error
-	onAggregatorDiscovered(*ServiceInfo) error
-	onClientDiscovered(*ServiceInfo) error
+	onServerDiscovered(*protocol.Signed[RegisteredService]) error
+	onAggregatorDiscovered(*protocol.Signed[RegisteredService]) error
+	onClientDiscovered(*protocol.Signed[RegisteredService]) error
 	selfPublicKey() string
 }
 
@@ -29,7 +29,7 @@ type discoveryHandler interface {
 type baseService struct {
 	config      *ServiceConfig
 	roundCoord  *protocol.LocalRoundCoordinator
-	registry    *ServiceRegistry
+	registry    *LocalServiceRegistry
 	httpClient  *http.Client
 	attestation []byte
 	signingKey  crypto.PrivateKey
@@ -43,8 +43,12 @@ type baseService struct {
 func newBaseService(config *ServiceConfig, signingKey crypto.PrivateKey, exchangeKey *ecdh.PrivateKey) (*baseService, error) {
 	roundCoord := protocol.NewLocalRoundCoordinator(config.ADCNetConfig.RoundDuration)
 
-	pubKey, _ := signingKey.PublicKey()
-	req := &ServiceRegistrationRequest{
+	pubKey, err := signingKey.PublicKey()
+	if err != nil {
+		return nil, fmt.Errorf("getting public key: %w", err)
+	}
+
+	req := &RegisteredService{
 		ServiceType:  config.ServiceType,
 		PublicKey:    pubKey.String(),
 		ExchangeKey:  hex.EncodeToString(exchangeKey.PublicKey().Bytes()),
@@ -53,18 +57,18 @@ func newBaseService(config *ServiceConfig, signingKey crypto.PrivateKey, exchang
 
 	attestation, err := AttestServiceRegistration(config.AttestationProvider, req)
 	if err != nil {
-		return nil, fmt.Errorf("could not attest registration: %w", err)
+		return nil, fmt.Errorf("attesting registration: %w", err)
 	}
 
 	return &baseService{
 		config:         config,
 		roundCoord:     roundCoord,
-		registry:       NewServiceRegistry(),
+		registry:       NewLocalServiceRegistry(),
 		httpClient:     &http.Client{Timeout: 10 * time.Second},
 		attestation:    attestation,
 		signingKey:     signingKey,
 		exchangeKey:    exchangeKey,
-		discoveryReqCh: make(chan struct{}),
+		discoveryReqCh: make(chan struct{}, 1),
 	}, nil
 }
 
@@ -73,50 +77,58 @@ func (b *baseService) publicKey() crypto.PublicKey {
 	return pubKey
 }
 
-func (b *baseService) sendRegistrationDirectly(endpoint string, serviceType ServiceType) error {
-	req := b.registrationRequest()
-	signedReq, err := protocol.NewSigned(b.signingKey, req)
-	if err != nil {
-		return fmt.Errorf("failed to sign secret exchange: %w", err)
-	}
-
-	body, _ := json.Marshal(signedReq)
-	resp, err := b.httpClient.Post(endpoint+"/register", "application/json", bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	resp.Body.Close()
-	return nil
-}
-
-func (b *baseService) registrationRequest() *ServiceRegistrationRequest {
+func (b *baseService) createSignedRegistration() (*protocol.Signed[RegisteredService], error) {
 	pubKey := b.publicKey()
-	return &ServiceRegistrationRequest{
+	req := &RegisteredService{
 		ServiceType:  b.config.ServiceType,
 		PublicKey:    pubKey.String(),
 		ExchangeKey:  hex.EncodeToString(b.exchangeKey.PublicKey().Bytes()),
 		HTTPEndpoint: fmt.Sprintf("http://%s", b.config.HTTPAddr),
 		Attestation:  b.attestation,
 	}
+	return protocol.NewSigned(b.signingKey, req)
+}
+
+func (b *baseService) sendRegistrationDirectly(endpoint string) error {
+	signedReq, err := b.createSignedRegistration()
+	if err != nil {
+		return fmt.Errorf("signing registration: %w", err)
+	}
+
+	body, err := json.Marshal(signedReq)
+	if err != nil {
+		return fmt.Errorf("marshaling registration: %w", err)
+	}
+
+	resp, err := b.httpClient.Post(endpoint+"/register", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("registration failed (%d): %s", resp.StatusCode, string(respBody))
+	}
+	return nil
 }
 
 // registerWithRegistry registers this service with the central registry.
-// Uses admin endpoint with authentication for servers and aggregators.
 func (b *baseService) registerWithRegistry() error {
 	if b.config.RegistryURL == "" {
 		return nil
 	}
 
-	req := b.registrationRequest()
-
-	signedReq, err := protocol.NewSigned(b.signingKey, req)
+	signedReq, err := b.createSignedRegistration()
 	if err != nil {
-		return fmt.Errorf("failed to sign registration: %w", err)
+		return fmt.Errorf("signing registration: %w", err)
 	}
 
-	body, _ := json.Marshal(signedReq)
+	body, err := json.Marshal(signedReq)
+	if err != nil {
+		return fmt.Errorf("marshaling registration: %w", err)
+	}
 
-	// Determine endpoint based on service type
 	var url string
 	if b.config.ServiceType == ClientService {
 		url = fmt.Sprintf("%s/register/%s", b.config.RegistryURL, b.config.ServiceType)
@@ -126,11 +138,10 @@ func (b *baseService) registerWithRegistry() error {
 
 	httpReq, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return err
+		return fmt.Errorf("creating request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	// Add admin auth for servers and aggregators
 	if b.config.ServiceType != ClientService && b.config.AdminToken != "" {
 		user, pass := parseAdminToken(b.config.AdminToken)
 		httpReq.SetBasicAuth(user, pass)
@@ -157,12 +168,10 @@ func parseAdminToken(token string) (user, pass string) {
 	return token[:idx], token[idx+1:]
 }
 
-// Note: this really should be async (sse/ws)
 func (b *baseService) runDiscoveryLoop(ctx context.Context, handler discoveryHandler) {
 	b.discoverServices(handler)
 
 	discoveryTickerDuration := 10 * time.Minute
-
 	ticker := time.NewTicker(discoveryTickerDuration)
 	defer ticker.Stop()
 
@@ -175,12 +184,15 @@ func (b *baseService) runDiscoveryLoop(ctx context.Context, handler discoveryHan
 		case <-b.discoveryReqCh:
 			ticker.Reset(discoveryTickerDuration)
 			b.discoverServices(handler)
-
-			// drain
-			select {
-			case <-b.discoveryReqCh:
-			default:
+			// Drain all pending discovery requests
+			for {
+				select {
+				case <-b.discoveryReqCh:
+				default:
+					goto drained
+				}
 			}
+		drained:
 		}
 	}
 }
@@ -207,10 +219,10 @@ func (b *baseService) discoverServices(handler discoveryHandler) {
 	selfPubKey := handler.selfPublicKey()
 
 	for _, svc := range list.Servers {
-		if svc.PublicKey == selfPubKey {
+		if svc.Object.PublicKey == selfPubKey {
 			continue
 		}
-		if _, exists := b.registry.Servers[svc.PublicKey]; !exists {
+		if _, exists := b.registry.Servers[svc.Object.PublicKey]; !exists {
 			if err := handler.onServerDiscovered(svc); err != nil {
 				continue
 			}
@@ -218,10 +230,10 @@ func (b *baseService) discoverServices(handler discoveryHandler) {
 	}
 
 	for _, svc := range list.Aggregators {
-		if svc.PublicKey == selfPubKey {
+		if svc.Object.PublicKey == selfPubKey {
 			continue
 		}
-		if _, exists := b.registry.Aggregators[svc.PublicKey]; !exists {
+		if _, exists := b.registry.Aggregators[svc.Object.PublicKey]; !exists {
 			if err := handler.onAggregatorDiscovered(svc); err != nil {
 				continue
 			}
@@ -229,10 +241,10 @@ func (b *baseService) discoverServices(handler discoveryHandler) {
 	}
 
 	for _, svc := range list.Clients {
-		if svc.PublicKey == selfPubKey {
+		if svc.Object.PublicKey == selfPubKey {
 			continue
 		}
-		if _, exists := b.registry.Clients[svc.PublicKey]; !exists {
+		if _, exists := b.registry.Clients[svc.Object.PublicKey]; !exists {
 			if err := handler.onClientDiscovered(svc); err != nil {
 				continue
 			}
@@ -241,10 +253,7 @@ func (b *baseService) discoverServices(handler discoveryHandler) {
 }
 
 func (b *baseService) handleRegister(w http.ResponseWriter, r *http.Request, handler discoveryHandler) {
-	// Rely on the remote registry for servers and aggregators. Refresh in the background.
-	// Hacky, should be done with a timeout & rate limite. Likely a DoS vector.
-
-	var signedReq protocol.Signed[ServiceRegistrationRequest]
+	var signedReq protocol.Signed[RegisteredService]
 	if err := json.NewDecoder(r.Body).Decode(&signedReq); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -252,7 +261,7 @@ func (b *baseService) handleRegister(w http.ResponseWriter, r *http.Request, han
 
 	rr, signer, err := signedReq.Recover()
 	if err != nil {
-		http.Error(w, fmt.Errorf("could not recover registration signature: %w", err).Error(), http.StatusForbidden)
+		http.Error(w, fmt.Sprintf("invalid signature: %v", err), http.StatusForbidden)
 		return
 	}
 
@@ -266,29 +275,23 @@ func (b *baseService) handleRegister(w http.ResponseWriter, r *http.Request, han
 		return
 	}
 
-	info := &ServiceInfo{
-		ServiceType:  rr.ServiceType,
-		HTTPEndpoint: rr.HTTPEndpoint,
-		PublicKey:    rr.PublicKey,
-		ExchangeKey:  rr.ExchangeKey,
-		Attestation:  rr.Attestation,
-		Signature:    signedReq.Signature.Bytes(),
-	}
-
-	switch info.ServiceType {
+	switch rr.ServiceType {
 	case ClientService:
-		if _, exists := b.registry.Clients[info.PublicKey]; !exists {
-			err = handler.onClientDiscovered(info)
+		if _, exists := b.registry.Clients[rr.PublicKey]; !exists {
+			if err := handler.onClientDiscovered(&signedReq); err != nil {
+				http.Error(w, err.Error(), http.StatusForbidden)
+				return
+			}
 		}
 	case AggregatorService:
-		if _, exists := b.registry.Aggregators[info.PublicKey]; !exists {
+		if _, exists := b.registry.Aggregators[rr.PublicKey]; !exists {
 			select {
 			case b.discoveryReqCh <- struct{}{}:
 			default:
 			}
 		}
 	case ServerService:
-		if _, exists := b.registry.Servers[info.PublicKey]; !exists {
+		if _, exists := b.registry.Servers[rr.PublicKey]; !exists {
 			select {
 			case b.discoveryReqCh <- struct{}{}:
 			default:
@@ -296,70 +299,49 @@ func (b *baseService) handleRegister(w http.ResponseWriter, r *http.Request, han
 		}
 	}
 
-	if err != nil {
-		http.Error(w, fmt.Errorf("could not recover registration signature: %w", err).Error(), http.StatusForbidden)
-		return
+	if err := json.NewEncoder(w).Encode(&ServiceRegistrationResponse{Success: true, PublicKey: rr.PublicKey}); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
-
-	json.NewEncoder(w).Encode(&ServiceRegistrationResponse{Success: true, PublicKey: signedReq.Object.PublicKey})
 }
 
-func (b *baseService) verifyAndStoreServer(info *ServiceInfo) (*ServiceEndpoint, error) {
-	if _, err := VerifyServiceInfo(b.config.AllowedMeasurementsSource, b.config.AttestationProvider, info); err != nil {
-		return nil, fmt.Errorf("attestation verification failed: %w", err)
-	}
-
-	pubKey, err := crypto.NewPublicKeyFromString(info.PublicKey)
+func (b *baseService) verifyAndStoreServer(signed *protocol.Signed[RegisteredService]) error {
+	svc, _, err := signed.Recover()
 	if err != nil {
-		return nil, err
+		return fmt.Errorf("invalid signature: %w", err)
 	}
 
-	endpoint := &ServiceEndpoint{
-		HTTPEndpoint: info.HTTPEndpoint,
-		PublicKey:    pubKey,
-		ExchangeKey:  info.ExchangeKey,
-		Attestation:  info.Attestation,
+	if _, err := VerifyRegistration(b.config.AllowedMeasurementsSource, b.config.AttestationProvider, signed); err != nil {
+		return fmt.Errorf("attestation verification failed: %w", err)
 	}
-	b.registry.Servers[info.PublicKey] = endpoint
-	return endpoint, nil
+
+	b.registry.Servers[svc.PublicKey] = signed
+	return nil
 }
 
-func (b *baseService) verifyAndStoreAggregator(info *ServiceInfo) (*ServiceEndpoint, error) {
-	if _, err := VerifyServiceInfo(b.config.AllowedMeasurementsSource, b.config.AttestationProvider, info); err != nil {
-		return nil, fmt.Errorf("attestation verification failed: %w", err)
-	}
-
-	pubKey, err := crypto.NewPublicKeyFromString(info.PublicKey)
+func (b *baseService) verifyAndStoreAggregator(signed *protocol.Signed[RegisteredService]) error {
+	svc, _, err := signed.Recover()
 	if err != nil {
-		return nil, err
+		return fmt.Errorf("invalid signature: %w", err)
 	}
 
-	endpoint := &ServiceEndpoint{
-		HTTPEndpoint: info.HTTPEndpoint,
-		PublicKey:    pubKey,
-		ExchangeKey:  info.ExchangeKey,
-		Attestation:  info.Attestation,
+	if _, err := VerifyRegistration(b.config.AllowedMeasurementsSource, b.config.AttestationProvider, signed); err != nil {
+		return fmt.Errorf("attestation verification failed: %w", err)
 	}
-	b.registry.Aggregators[info.PublicKey] = endpoint
-	return endpoint, nil
+
+	b.registry.Aggregators[svc.PublicKey] = signed
+	return nil
 }
 
-func (b *baseService) verifyAndStoreClient(info *ServiceInfo) (*ServiceEndpoint, error) {
-	if _, err := VerifyServiceInfo(b.config.AllowedMeasurementsSource, b.config.AttestationProvider, info); err != nil {
-		return nil, fmt.Errorf("attestation verification failed: %w", err)
-	}
-
-	pubKey, err := crypto.NewPublicKeyFromString(info.PublicKey)
+func (b *baseService) verifyAndStoreClient(signed *protocol.Signed[RegisteredService]) error {
+	svc, _, err := signed.Recover()
 	if err != nil {
-		return nil, err
+		return fmt.Errorf("invalid signature: %w", err)
 	}
 
-	endpoint := &ServiceEndpoint{
-		HTTPEndpoint: info.HTTPEndpoint,
-		PublicKey:    pubKey,
-		ExchangeKey:  info.ExchangeKey,
-		Attestation:  info.Attestation,
+	if _, err := VerifyRegistration(b.config.AllowedMeasurementsSource, b.config.AttestationProvider, signed); err != nil {
+		return fmt.Errorf("attestation verification failed: %w", err)
 	}
-	b.registry.Clients[info.PublicKey] = endpoint
-	return endpoint, nil
+
+	b.registry.Clients[svc.PublicKey] = signed
+	return nil
 }

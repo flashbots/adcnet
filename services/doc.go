@@ -35,17 +35,18 @@ Admin Endpoints (require basic auth when AdminToken is configured):
 ## HTTP Services
 
 HTTPClient wraps protocol.ClientService with registry integration.
-Clients self-register on startup via the public endpoint.
-Endpoints: POST /exchange, POST /round-broadcast.
+Clients self-register on startup via the public endpoint. Clients poll
+servers for round broadcasts rather than receiving pushed updates, allowing
+inactive clients to naturally stop participating without cleanup.
 
 HTTPAggregator wraps protocol.AggregatorService with registry integration.
 Aggregators self-register via admin endpoint with configured admin_token.
-Endpoints: POST /exchange, POST /client-messages, POST /aggregate-messages,
+Endpoints: POST /register, POST /client-messages, POST /aggregate-messages,
 GET /aggregates/{round}.
 
 HTTPServer wraps protocol.ServerService with registry integration.
 Servers self-register via admin endpoint with configured admin_token.
-Endpoints: POST /exchange, POST /aggregate, POST /partial-decryption,
+Endpoints: POST /register, POST /aggregate, POST /partial-decryption,
 GET /round-broadcast/{round}.
 
 ## Measurement Sources
@@ -91,13 +92,14 @@ Configuration can be provided via YAML files:
 
   - Client Phase: Clients discover servers and aggregators, establish shared
     secrets via signed exchange requests, XOR-blind messages with one-time pads,
-    and send signed messages to aggregators.
+    and send signed messages to aggregators. Clients poll servers for previous
+    round broadcasts to determine auction results.
   - Aggregation Phase: Aggregators discover servers, XOR client message vectors
     and add auction vectors in the finite field, then forward signed aggregates
     to all servers.
   - Server Phase: Each server removes its XOR blinding factors, servers exchange
-    signed partial decryptions, and the leader reconstructs messages and sends
-    signed broadcasts to clients.
+    signed partial decryptions, and the leader reconstructs messages. Round
+    broadcasts are stored and made available via GET endpoint for client polling.
 
 # Security Model
 
@@ -107,7 +109,7 @@ All messages are signed and verified:
   - ClientRoundMessage: Signed by client, verified by aggregator
   - AggregatedClientMessages: Signed by aggregator, verified by servers
   - ServerPartialDecryptionMessage: Signed by server, verified by other servers
-  - RoundBroadcast: Signed by leader server, verified by clients
+  - RoundBroadcast: Signed by leader server, verified by clients when polled
 
 Attestation verification occurs during service discovery. All protocol messages
 are verified against attested keys stored in the local registry.
@@ -128,7 +130,8 @@ are verified against attested keys stored in the local registry.
   - Aggregators reduce server bandwidth by O(NumClients)
   - Parallel HTTP requests for efficiency
   - Configurable round duration for throughput tuning
-  - Periodic discovery polling (default: 5 second interval)
+  - Periodic discovery polling (default: 10 minute interval)
   - Measurement source caches results for 1 hour
+  - Client polling for broadcasts eliminates stale client tracking
 */
 package services

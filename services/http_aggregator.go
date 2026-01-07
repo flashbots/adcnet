@@ -14,7 +14,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 )
 
-// HTTPAggregator wraps the protocol AggregatorService with HTTP endpoints and registry integration.
+// HTTPAggregator wraps the protocol AggregatorService with HTTP endpoints.
 type HTTPAggregator struct {
 	*baseService
 	service *protocol.AggregatorService
@@ -64,21 +64,21 @@ func (a *HTTPAggregator) selfPublicKey() string {
 	return a.publicKey().String()
 }
 
-func (a *HTTPAggregator) onServerDiscovered(info *ServiceInfo) error {
-	if _, err := a.verifyAndStoreServer(info); err != nil {
+func (a *HTTPAggregator) onServerDiscovered(signed *protocol.Signed[RegisteredService]) error {
+	if err := a.verifyAndStoreServer(signed); err != nil {
 		return err
 	}
-
-	return a.sendRegistrationDirectly(info.HTTPEndpoint, AggregatorService)
+	return a.sendRegistrationDirectly(signed.Object.HTTPEndpoint)
 }
 
-func (a *HTTPAggregator) onAggregatorDiscovered(info *ServiceInfo) error {
-	_, err := a.verifyAndStoreAggregator(info)
-	return err
+func (a *HTTPAggregator) onAggregatorDiscovered(signed *protocol.Signed[RegisteredService]) error {
+	return a.verifyAndStoreAggregator(signed)
 }
 
-func (a *HTTPAggregator) onClientDiscovered(info *ServiceInfo) error {
-	pubKey, err := crypto.NewPublicKeyFromString(info.PublicKey)
+func (a *HTTPAggregator) onClientDiscovered(signed *protocol.Signed[RegisteredService]) error {
+	svc := signed.Object
+
+	pubKey, err := svc.ParsePublicKey()
 	if err != nil {
 		return err
 	}
@@ -87,8 +87,7 @@ func (a *HTTPAggregator) onClientDiscovered(info *ServiceInfo) error {
 		return err
 	}
 
-	_, err = a.verifyAndStoreClient(info)
-	return err
+	return a.verifyAndStoreClient(signed)
 }
 
 func (a *HTTPAggregator) handleRoundTransitions(ctx context.Context) {
@@ -111,37 +110,41 @@ func (a *HTTPAggregator) handleRoundTransitions(ctx context.Context) {
 	}
 }
 
-func (a *HTTPAggregator) sendAggregates() error {
+func (a *HTTPAggregator) sendAggregates() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	aggregate := a.service.CurrentAggregates()
 	if aggregate == nil {
-		return nil
+		return
 	}
 
-	servers := make([]*ServiceEndpoint, 0, len(a.registry.Servers))
+	servers := make([]*protocol.Signed[RegisteredService], 0, len(a.registry.Servers))
 	for _, srv := range a.registry.Servers {
 		servers = append(servers, srv)
 	}
 
 	for _, srv := range servers {
-		a.sendToServer(srv, aggregate)
+		if err := a.sendToServer(srv, aggregate); err != nil {
+			// Log but continue
+			fmt.Printf("Failed to send to server %s: %v\n", srv.Object.HTTPEndpoint, err)
+		}
 	}
-
-	return nil
 }
 
-func (a *HTTPAggregator) sendToServer(srv *ServiceEndpoint, agg *protocol.AggregatedClientMessages) error {
+func (a *HTTPAggregator) sendToServer(srv *protocol.Signed[RegisteredService], agg *protocol.AggregatedClientMessages) error {
 	signedMsg, err := protocol.NewSigned(a.signingKey, agg)
 	if err != nil {
 		return err
 	}
 
 	req := &AggregateMessageRequest{Message: signedMsg}
-	body, _ := json.Marshal(req)
+	body, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("marshaling request: %w", err)
+	}
 
-	resp, err := a.httpClient.Post(srv.HTTPEndpoint+"/aggregate", "application/json", bytes.NewReader(body))
+	resp, err := a.httpClient.Post(srv.Object.HTTPEndpoint+"/aggregate", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -160,29 +163,34 @@ func (a *HTTPAggregator) handleClientMessages(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	// Verify all signatures BEFORE acquiring lock (DoS prevention)
+	verified, err := protocol.VerifyClientMessages(req.Messages)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	for _, msg := range req.Messages {
-		_, signer, err := msg.Recover()
-		if err != nil {
-			http.Error(w, fmt.Sprintf("invalid signature: %v", err), http.StatusBadRequest)
-			return
-		}
-		if _, exists := a.registry.Clients[signer.String()]; !exists {
+	// Verify all signers are registered
+	for _, v := range verified {
+		if _, exists := a.registry.Clients[v.Signer.String()]; !exists {
 			http.Error(w, "client not registered or not attested", http.StatusForbidden)
 			return
 		}
 	}
 
-	aggregate, err := a.service.ProcessClientMessages(req.Messages)
+	aggregate, err := a.service.ProcessVerifiedMessages(verified)
 	if err != nil {
 		fmt.Println(err.Error())
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	json.NewEncoder(w).Encode(aggregate)
+	if err := json.NewEncoder(w).Encode(aggregate); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
 }
 
 func (a *HTTPAggregator) handleAggregateMessages(w http.ResponseWriter, r *http.Request) {
@@ -192,31 +200,40 @@ func (a *HTTPAggregator) handleAggregateMessages(w http.ResponseWriter, r *http.
 		return
 	}
 
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
+	// Verify signatures before lock
 	msgs := make([]*protocol.AggregatedClientMessages, 0, len(req.Messages))
+	signers := make([]crypto.PublicKey, 0, len(req.Messages))
 	for _, signedMsg := range req.Messages {
 		msg, signer, err := signedMsg.Recover()
 		if err != nil {
 			http.Error(w, fmt.Sprintf("invalid signature: %v", err), http.StatusBadRequest)
 			return
 		}
+		msgs = append(msgs, msg)
+		signers = append(signers, signer)
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	// Verify all signers are registered aggregators
+	for _, signer := range signers {
 		if _, exists := a.registry.Aggregators[signer.String()]; !exists {
 			http.Error(w, "aggregator not registered or not attested", http.StatusForbidden)
 			return
 		}
-		msgs = append(msgs, msg)
 	}
 
 	result, err := (&protocol.AggregatorMessager{Config: a.config.ADCNetConfig}).
-		AggregateAggregates(int(a.currentRound.Number), msgs)
+		AggregateAggregates(a.currentRound.Number, msgs)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	json.NewEncoder(w).Encode(result)
+	if err := json.NewEncoder(w).Encode(result); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
 }
 
 func (a *HTTPAggregator) handleGetAggregates(w http.ResponseWriter, r *http.Request) {
@@ -236,7 +253,9 @@ func (a *HTTPAggregator) handleGetAggregates(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	json.NewEncoder(w).Encode(currentAggregate)
+	if err := json.NewEncoder(w).Encode(currentAggregate); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
 }
 
 // PublicKey returns the aggregator's signing public key.

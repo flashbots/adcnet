@@ -1,7 +1,9 @@
 package services
 
 import (
+	"crypto/ecdh"
 	"encoding/hex"
+	"fmt"
 
 	"github.com/flashbots/adcnet/crypto"
 	"github.com/flashbots/adcnet/protocol"
@@ -16,7 +18,6 @@ type ServiceConfig struct {
 	ServiceType               ServiceType
 	RegistryURL               string
 	// AdminToken for authenticating with registry admin endpoints (user:pass).
-	// Required for servers and aggregators.
 	AdminToken string
 }
 
@@ -29,47 +30,44 @@ const (
 	ServerService     ServiceType = "server"
 )
 
-// ServiceRegistrationRequest registers a service with the central registry.
-type ServiceRegistrationRequest struct {
-	ServiceType  ServiceType `json:"service_type"`
-	PublicKey    string      `json:"public_key"`
-	ExchangeKey  string      `json:"exchange_key"`
-	HTTPEndpoint string      `json:"http_endpoint"`
-	Attestation  []byte      `json:"attestation,omitempty"`
-}
-
-// ServiceRegistrationResponse confirms registry registration.
-type ServiceRegistrationResponse struct {
-	Success   bool   `json:"success"`
-	PublicKey string `json:"public_key,omitempty"`
-	Message   string `json:"message,omitempty"`
-}
-
-// ServiceInfo describes a registered service for discovery.
-type ServiceInfo struct {
-	ServiceType  ServiceType `json:"service_type"`
-	HTTPEndpoint string      `json:"http_endpoint"`
-	PublicKey    string      `json:"public_key"`
-	ExchangeKey  string      `json:"exchange_key"`
-	Attestation  []byte      `json:"attestation,omitempty"`
-	Signature    []byte      `json:"signature,omitempty"`
-}
-
-func (i *ServiceInfo) ToServiceRegistrationRequest() *ServiceRegistrationRequest {
-	return &ServiceRegistrationRequest{
-		ServiceType:  i.ServiceType,
-		PublicKey:    i.PublicKey,
-		ExchangeKey:  i.ExchangeKey,
-		HTTPEndpoint: i.HTTPEndpoint,
-		Attestation:  i.Attestation,
+// Valid returns true if the service type is recognized.
+func (t ServiceType) Valid() bool {
+	switch t {
+	case ClientService, AggregatorService, ServerService:
+		return true
 	}
+	return false
+}
+
+// RegisteredService contains all registration data for a service instance.
+// This is the canonical type used throughout the system for service identity.
+type RegisteredService struct {
+	ServiceType  ServiceType `json:"service_type"`
+	HTTPEndpoint string      `json:"http_endpoint"`
+	PublicKey    string      `json:"public_key"`
+	ExchangeKey  string      `json:"exchange_key"`
+	Attestation  []byte      `json:"attestation,omitempty"`
+}
+
+// ParsePublicKey returns the parsed signing public key.
+func (s *RegisteredService) ParsePublicKey() (crypto.PublicKey, error) {
+	return crypto.NewPublicKeyFromString(s.PublicKey)
+}
+
+// ParseExchangeKey returns the parsed ECDH public key.
+func ParseExchangeKey(exchangeKey string) (*ecdh.PublicKey, error) {
+	keyBytes, err := hex.DecodeString(exchangeKey)
+	if err != nil {
+		return nil, fmt.Errorf("invalid exchange key hex: %w", err)
+	}
+	return ecdh.P256().NewPublicKey(keyBytes)
 }
 
 // ServiceListResponse contains all registered services by type.
 type ServiceListResponse struct {
-	Servers     []*ServiceInfo `json:"servers"`
-	Aggregators []*ServiceInfo `json:"aggregators"`
-	Clients     []*ServiceInfo `json:"clients"`
+	Servers     []*protocol.Signed[RegisteredService] `json:"servers"`
+	Aggregators []*protocol.Signed[RegisteredService] `json:"aggregators"`
+	Clients     []*protocol.Signed[RegisteredService] `json:"clients"`
 }
 
 // SecretExchangeResponse confirms shared secret establishment.
@@ -115,50 +113,25 @@ type MessageResponse struct {
 	Messages []*protocol.Signed[protocol.ClientRoundMessage] `json:"messages,omitempty"`
 }
 
-// ServiceRegistry caches discovered service endpoints locally.
-type ServiceRegistry struct {
-	Clients     map[string]*ServiceEndpoint
-	Aggregators map[string]*ServiceEndpoint
-	Servers     map[string]*ServiceEndpoint
+// ServiceRegistrationResponse confirms registry registration.
+type ServiceRegistrationResponse struct {
+	Success   bool   `json:"success"`
+	PublicKey string `json:"public_key,omitempty"`
+	Message   string `json:"message,omitempty"`
 }
 
-// ServiceEndpoint contains connection information for a discovered service.
-// TODO: replace with ServiceInfo
-type ServiceEndpoint struct {
-	HTTPEndpoint string
-	PublicKey    crypto.PublicKey
-	ExchangeKey  string
-	Attestation  []byte
+// LocalServiceRegistry caches discovered and verified service endpoints locally.
+type LocalServiceRegistry struct {
+	Clients     map[string]*protocol.Signed[RegisteredService]
+	Aggregators map[string]*protocol.Signed[RegisteredService]
+	Servers     map[string]*protocol.Signed[RegisteredService]
 }
 
-// NewServiceRegistry creates an empty local service cache.
-func NewServiceRegistry() *ServiceRegistry {
-	return &ServiceRegistry{
-		Clients:     make(map[string]*ServiceEndpoint),
-		Aggregators: make(map[string]*ServiceEndpoint),
-		Servers:     make(map[string]*ServiceEndpoint),
-	}
-}
-
-// RegisteredService contains registration data for a service instance.
-// TODO: replace with ServiceInfo
-type RegisteredService struct {
-	Type           ServiceType
-	Endpoint       string
-	PublicKey      crypto.PublicKey
-	ExchangePubKey []byte
-	Attestation    []byte
-	Signature      crypto.Signature
-}
-
-// ToServiceInfo converts a RegisteredService to ServiceInfo.
-func (s *RegisteredService) ToServiceInfo() *ServiceInfo {
-	return &ServiceInfo{
-		ServiceType:  s.Type,
-		HTTPEndpoint: s.Endpoint,
-		PublicKey:    s.PublicKey.String(),
-		ExchangeKey:  hex.EncodeToString(s.ExchangePubKey),
-		Attestation:  s.Attestation,
-		Signature:    s.Signature.Bytes(),
+// NewLocalServiceRegistry creates an empty local service cache.
+func NewLocalServiceRegistry() *LocalServiceRegistry {
+	return &LocalServiceRegistry{
+		Clients:     make(map[string]*protocol.Signed[RegisteredService]),
+		Aggregators: make(map[string]*protocol.Signed[RegisteredService]),
+		Servers:     make(map[string]*protocol.Signed[RegisteredService]),
 	}
 }

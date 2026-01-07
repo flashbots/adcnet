@@ -10,13 +10,14 @@ import (
 	"github.com/flashbots/adcnet/crypto"
 )
 
-// IBFNChunks defines the number of levels in the multi-level IBF structure.
+// IBFNChunks is the number of levels in the multi-level IBF structure.
+// TODO: rename to IBFDepth
 const IBFNChunks int = 4
 
-// IBFShrinkFactor defines the size reduction factor between IBF levels.
+// IBFShrinkFactor is the size reduction factor between IBF levels.
 const IBFShrinkFactor float64 = 0.75
 
-// IBFChunkSize defines the byte size of each IBF element (384 bits for AuctionFieldOrder).
+// IBFChunkSize is the byte size of each IBF element (384 bits).
 const IBFChunkSize uint32 = 48
 
 // IBFVectorLength calculates the total number of buckets across all IBF levels.
@@ -35,8 +36,7 @@ func IBFVectorSize(nBuckets uint32) uint32 {
 	return uint32(IBFVectorLength(nBuckets)) * IBFChunkSize
 }
 
-// IBFVector implements a multi-level Invertible Bloom Filter for distributed auction scheduling.
-// The IBF is secret-shared across servers and reconstructed after threshold decryption.
+// IBFVector implements a multi-level Invertible Bloom Filter for auction scheduling.
 type IBFVector struct {
 	Chunks   [IBFNChunks][]big.Int
 	Counters [IBFNChunks][]uint64
@@ -72,7 +72,7 @@ func NewIBFVector(messageSlots uint32) *IBFVector {
 	return res
 }
 
-// ChunkToElement converts a chunk to a field element in AuctionFieldOrder.
+// ChunkToElement converts a chunk to a field element.
 func ChunkToElement(data [IBFChunkSize]byte) *big.Int {
 	return new(big.Int).SetBytes(data[:])
 }
@@ -84,19 +84,17 @@ func ElementToChunk(el *big.Int) [IBFChunkSize]byte {
 	return data
 }
 
-// InsertChunk adds a chunk to the IBF using field addition in AuctionFieldOrder.
+// InsertChunk adds a chunk to the IBF using field addition.
 func (v *IBFVector) InsertChunk(msg [IBFChunkSize]byte) {
 	msgAsEl := ChunkToElement(msg)
 	for level := 0; level < IBFNChunks; level++ {
 		index := ChunkIndex(msg, level, len(v.Chunks[level]))
-
 		crypto.FieldAddInplace(&v.Chunks[level][index], msgAsEl, crypto.AuctionFieldOrder)
-		v.Counters[level][index] += 1
+		v.Counters[level][index]++
 	}
 }
 
-// EncodeAsFieldElements serializes the IBF as field elements for secret sharing.
-// Operates in AuctionFieldOrder (384-bit) for compatibility with the protocol.
+// EncodeAsFieldElements serializes the IBF as field elements for blinding.
 func (v *IBFVector) EncodeAsFieldElements() []*big.Int {
 	res := []*big.Int{}
 	for level := range v.Chunks {
@@ -119,14 +117,14 @@ func (v *IBFVector) DecodeFromElements(elements []*big.Int) *IBFVector {
 	for level := range v.Chunks {
 		for chunk := range v.Chunks[level] {
 			v.Chunks[level][chunk].Set(elements[index])
-			index += 1
+			index++
 		}
 	}
 
 	for level := range v.Counters {
 		for i := range v.Counters[level] {
 			v.Counters[level][i] = elements[index].Uint64()
-			index += 1
+			index++
 		}
 	}
 
@@ -135,77 +133,74 @@ func (v *IBFVector) DecodeFromElements(elements []*big.Int) *IBFVector {
 
 // ChunkIndex computes the bucket index for a chunk at a specific IBF level.
 func ChunkIndex(chunk [IBFChunkSize]byte, level int, itemsInLevel int) uint64 {
-	// TODO: this is really not very fast
 	dataToHash := append([]byte(fmt.Sprintf("%d", level)), chunk[:]...)
 	innerIndexSeed := sha256.Sum256(dataToHash)
 	return uint64(binary.BigEndian.Uint64(innerIndexSeed[0:8])) % uint64(itemsInLevel)
 }
 
-// Recover extracts auction entries from the reconstructed IBF using the peeling algorithm.
-// Called after decryption to determine next round's message scheduling.
+// pureCell represents a cell that can be peeled during IBF recovery.
+type pureCell struct {
+	level int
+	index int
+}
+
+// Recover extracts auction entries using queue-based peeling algorithm.
+// This is O(n) where n is the number of entries, avoiding the O(n²) restart approach.
 func (v *IBFVector) Recover() ([][IBFChunkSize]byte, error) {
-	// Create a copy of the IBF to work with during recovery
-	workingCopy := &IBFVector{}
-
-	// Deep copy chunks and counters
+	// Deep copy to avoid modifying original
+	working := &IBFVector{}
 	for level := range v.Chunks {
-		workingCopy.Chunks[level] = make([]big.Int, len(v.Chunks[level]))
-		workingCopy.Counters[level] = make([]uint64, len(v.Counters[level]))
-
+		working.Chunks[level] = make([]big.Int, len(v.Chunks[level]))
+		working.Counters[level] = make([]uint64, len(v.Counters[level]))
 		for i := range v.Chunks[level] {
-			workingCopy.Chunks[level][i].Set(&v.Chunks[level][i])
-			workingCopy.Counters[level][i] = v.Counters[level][i]
+			working.Chunks[level][i].Set(&v.Chunks[level][i])
+			working.Counters[level][i] = v.Counters[level][i]
 		}
 	}
 
-	// Store recovered elements
 	recovered := make([][IBFChunkSize]byte, 0)
 
-	// Keep track of whether we made progress in the current iteration
-	madeProgress := true
+	// Initialize queue with all pure cells (counter == 1)
+	queue := make([]pureCell, 0)
+	for level := range working.Chunks {
+		for i := range working.Chunks[level] {
+			if working.Counters[level][i] == 1 {
+				queue = append(queue, pureCell{level, i})
+			}
+		}
+	}
 
 	chunkEl := new(big.Int)
 
-	// Continue peeling until no more progress can be made
-	for madeProgress {
-		madeProgress = false
+	// Process queue until empty
+	for len(queue) > 0 {
+		cell := queue[0]
+		queue = queue[1:]
 
-		// Check each level for pure cells (counter = 1)
-		for level := range workingCopy.Chunks {
-			for i := range workingCopy.Chunks[level] {
-				// Found a pure cell
-				if workingCopy.Counters[level][i] == 1 {
-					// Get the chunk from this cell
-					chunkEl.Set(&workingCopy.Chunks[level][i])
-					chunk := ElementToChunk(chunkEl)
+		// Cell may no longer be pure after other operations
+		if working.Counters[cell.level][cell.index] != 1 {
+			continue
+		}
 
-					// Record this chunk as recovered
-					recovered = append(recovered, chunk)
+		// Extract the chunk
+		chunkEl.Set(&working.Chunks[cell.level][cell.index])
+		chunk := ElementToChunk(chunkEl)
+		recovered = append(recovered, chunk)
 
-					// Remove this chunk from all levels to continue peeling
-					for innerLevel := range workingCopy.Chunks {
-						innerIndex := ChunkIndex(chunk, innerLevel, len(workingCopy.Chunks[innerLevel]))
+		// Remove chunk from all levels and check for new pure cells
+		for innerLevel := range working.Chunks {
+			innerIndex := ChunkIndex(chunk, innerLevel, len(working.Chunks[innerLevel]))
 
-						// Decrement the counter
-						if workingCopy.Counters[innerLevel][innerIndex] == 0 {
-							return nil, errors.New("unexpected zero counter while recovering IBF")
-						}
-
-						// Remove the chunk from this cell
-						crypto.FieldSubInplace(&workingCopy.Chunks[innerLevel][innerIndex], chunkEl, crypto.AuctionFieldOrder)
-						workingCopy.Counters[innerLevel][innerIndex]--
-					}
-
-					// We made progress in this iteration
-					madeProgress = true
-
-					// Since we modified the IBF, start checking from the beginning again
-					break
-				}
+			if working.Counters[innerLevel][innerIndex] == 0 {
+				return nil, errors.New("unexpected zero counter while recovering IBF")
 			}
 
-			if madeProgress {
-				break
+			crypto.FieldSubInplace(&working.Chunks[innerLevel][innerIndex], chunkEl, crypto.AuctionFieldOrder)
+			working.Counters[innerLevel][innerIndex]--
+
+			// If this cell became pure, add to queue
+			if working.Counters[innerLevel][innerIndex] == 1 {
+				queue = append(queue, pureCell{innerLevel, int(innerIndex)})
 			}
 		}
 	}

@@ -147,7 +147,10 @@ func run(cfg *common.Config) error {
 		AdminToken:          cfg.AdminToken,
 	}
 
-	registry := services.NewRegistry(registryConfig, adcConfig)
+	registry, err := services.NewRegistry(registryConfig, adcConfig)
+	if err != nil {
+		return err
+	}
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)

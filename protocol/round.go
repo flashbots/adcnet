@@ -2,12 +2,14 @@ package protocol
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
+// RoundContext represents the phase within a protocol round.
 type RoundContext int
 
 const (
@@ -17,15 +19,18 @@ const (
 	ServerLeaderRoundContext
 )
 
+// Round represents a protocol round with its phase context.
 type Round struct {
 	Number  int
 	Context RoundContext
 }
 
+// IsAfter returns true if this round occurs after r2.
 func (r Round) IsAfter(r2 Round) bool {
 	return r.Number > r2.Number || (r.Number == r2.Number && r.Context > r2.Context)
 }
 
+// Advance returns the next round phase.
 func (r Round) Advance() Round {
 	if r.Context == ServerLeaderRoundContext {
 		return Round{r.Number + 1, ClientRoundContext}
@@ -35,20 +40,13 @@ func (r Round) Advance() Round {
 
 // RoundCoordinator manages protocol round transitions.
 type RoundCoordinator interface {
-	// CurrentRound returns the current protocol round number.
 	CurrentRound() Round
-
-	// SubscribeToRounds receives round transition notifications.
-	SubscribeToRounds() <-chan Round
-
-	// Start begins round progression.
+	SubscribeToRounds(ctx context.Context) <-chan Round
 	Start(ctx context.Context)
-
-	// AdvanceToRound manually advances to a specific round (for testing).
 	AdvanceToRound(round Round)
 }
 
-type Subscriber struct {
+type subscriber struct {
 	ctx context.Context
 	ch  chan Round
 }
@@ -58,8 +56,7 @@ type LocalRoundCoordinator struct {
 	mu            sync.RWMutex
 	currentRound  Round
 	roundDuration time.Duration
-	subscribers   []Subscriber
-	ticker        *time.Ticker
+	subscribers   []subscriber
 	started       *atomic.Bool
 }
 
@@ -68,7 +65,7 @@ func NewLocalRoundCoordinator(roundDuration time.Duration) *LocalRoundCoordinato
 	return &LocalRoundCoordinator{
 		currentRound:  Round{0, ClientRoundContext},
 		roundDuration: roundDuration,
-		subscribers:   make([]Subscriber, 0),
+		subscribers:   make([]subscriber, 0),
 		started:       &atomic.Bool{},
 	}
 }
@@ -80,15 +77,14 @@ func (c *LocalRoundCoordinator) CurrentRound() Round {
 	return c.currentRound
 }
 
-// SubscribeToRounds receives round transition notifications.
+// SubscribeToRounds returns a channel that receives round transition notifications.
 func (c *LocalRoundCoordinator) SubscribeToRounds(ctx context.Context) <-chan Round {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	ch := make(chan Round, 10)
-	c.subscribers = append(c.subscribers, Subscriber{ctx, ch})
+	c.subscribers = append(c.subscribers, subscriber{ctx, ch})
 
-	// Send current round immediately
 	go func() {
 		ch <- c.currentRound
 	}()
@@ -96,11 +92,25 @@ func (c *LocalRoundCoordinator) SubscribeToRounds(ctx context.Context) <-chan Ro
 	return ch
 }
 
-func RoundForTime(instnant time.Time, roundDuration time.Duration) Round {
-	nTicks := instnant.UnixMilli() / (roundDuration.Milliseconds() / 4)
-	return Round{int(nTicks / 4), RoundContext(nTicks % 4)}
+// RoundForTime calculates the round for a given instant.
+func RoundForTime(instant time.Time, roundDuration time.Duration) (Round, error) {
+	if roundDuration <= 0 {
+		return Round{}, errors.New("round duration must be positive")
+	}
+	if instant.Before(time.Unix(0, 0)) {
+		return Round{}, errors.New("time must not be negative")
+	}
+
+	tickDuration := roundDuration.Milliseconds() / 4
+	if tickDuration == 0 {
+		return Round{}, errors.New("round duration too small")
+	}
+
+	nTicks := instant.UnixMilli() / tickDuration
+	return Round{int(nTicks / 4), RoundContext(nTicks % 4)}, nil
 }
 
+// TimeForRound returns the start time for a given round.
 func TimeForRound(round Round, roundDuration time.Duration) time.Time {
 	startTime := time.Unix(0, 0)
 	return startTime.Add(time.Duration(round.Number) * roundDuration).Add(time.Duration(round.Context) * roundDuration / 4)
@@ -112,7 +122,12 @@ func (c *LocalRoundCoordinator) Start(ctx context.Context) {
 		return
 	}
 
-	c.currentRound = RoundForTime(time.Now(), c.roundDuration)
+	round, err := RoundForTime(time.Now(), c.roundDuration)
+	if err != nil {
+		c.currentRound = Round{0, ClientRoundContext}
+	} else {
+		c.currentRound = round
+	}
 
 	go func() {
 		for {
@@ -126,21 +141,18 @@ func (c *LocalRoundCoordinator) Start(ctx context.Context) {
 	}()
 }
 
-// AdvanceToRound manually advances to a specific round.
-// Only used in tests.
+// AdvanceToRound manually advances to a specific round (for testing).
 func (c *LocalRoundCoordinator) AdvanceToRound(round Round) {
 	for round.IsAfter(c.CurrentRound()) {
 		c.advanceRound()
 	}
 }
 
-// advanceRound moves to the next round and notifies subscribers.
 func (c *LocalRoundCoordinator) advanceRound() {
 	c.mu.Lock()
 	c.currentRound = c.currentRound.Advance()
 	newRound := c.currentRound
 
-	// Notify subscribers
 	toRemove := []int{}
 	for i, sub := range c.subscribers {
 		select {
@@ -149,11 +161,9 @@ func (c *LocalRoundCoordinator) advanceRound() {
 			toRemove = append(toRemove, i)
 		case sub.ch <- newRound:
 		default:
-			// Skip if channel is full
 		}
 	}
 
-	// Not critical to optimize this
 	slices.Reverse(toRemove)
 	for _, i := range toRemove {
 		c.subscribers = slices.Delete(c.subscribers, i, i)

@@ -5,9 +5,9 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"sync"
 
 	"github.com/flashbots/adcnet/crypto"
@@ -22,15 +22,22 @@ type TEEProvider interface {
 	Verify(attestationReport []byte, expectedReportData [64]byte) (map[int][]byte, error)
 }
 
-// Measurements maps PCR indices to expected measurement values for attestation verification.
+// Measurements maps register indices to expected measurement values.
 type Measurements map[int][]byte
 
-// RegistryConfig configures allowed attestation measurements.
+// RegistryStore abstracts persistence for registered services.
+type RegistryStore interface {
+	SaveService(signed *protocol.Signed[RegisteredService]) error
+	DeleteService(publicKey string) error
+	LoadAllServices() (map[ServiceType]map[string]*protocol.Signed[RegisteredService], error)
+}
+
+// RegistryConfig configures the registry.
 type RegistryConfig struct {
 	MeasurementSource   MeasurementSource
 	AttestationProvider TEEProvider
+	Store               RegistryStore
 	// AdminToken requires basic auth for admin operations when set.
-	// Format: "username:password". Empty string disables authentication.
 	AdminToken string
 }
 
@@ -40,23 +47,35 @@ type Registry struct {
 	adcConfig *protocol.ADCNetConfig
 
 	mu       sync.RWMutex
-	services map[ServiceType]map[string]*RegisteredService
+	services map[ServiceType]map[string]*protocol.Signed[RegisteredService]
 }
 
 // NewRegistry creates a registry with the given configuration.
-func NewRegistry(config *RegistryConfig, adcConfig *protocol.ADCNetConfig) *Registry {
-	return &Registry{
+func NewRegistry(config *RegistryConfig, adcConfig *protocol.ADCNetConfig) (*Registry, error) {
+	r := &Registry{
 		config:    config,
 		adcConfig: adcConfig,
-		services: map[ServiceType]map[string]*RegisteredService{
-			ServerService:     make(map[string]*RegisteredService),
-			AggregatorService: make(map[string]*RegisteredService),
-			ClientService:     make(map[string]*RegisteredService),
+		services: map[ServiceType]map[string]*protocol.Signed[RegisteredService]{
+			ServerService:     make(map[string]*protocol.Signed[RegisteredService]),
+			AggregatorService: make(map[string]*protocol.Signed[RegisteredService]),
+			ClientService:     make(map[string]*protocol.Signed[RegisteredService]),
 		},
 	}
+
+	// Load persisted services if store is configured
+	if config.Store != nil {
+		services, err := config.Store.LoadAllServices()
+		if err != nil {
+			return nil, fmt.Errorf("loading persisted services: %w", err)
+		}
+		for svcType, svcMap := range services {
+			r.services[svcType] = svcMap
+		}
+	}
+
+	return r, nil
 }
 
-// basicAuthMiddleware returns middleware that requires basic auth for admin operations.
 func (r *Registry) basicAuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if r.config == nil || r.config.AdminToken == "" {
@@ -84,6 +103,7 @@ func (r *Registry) basicAuthMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// RegisterAdminRoutes registers admin-only routes with authentication.
 func (r *Registry) RegisterAdminRoutes(router chi.Router) {
 	router.Group(func(admin chi.Router) {
 		admin.Use(r.basicAuthMiddleware)
@@ -92,6 +112,7 @@ func (r *Registry) RegisterAdminRoutes(router chi.Router) {
 	})
 }
 
+// RegisterPublicRoutes registers public routes.
 func (r *Registry) RegisterPublicRoutes(router chi.Router) {
 	router.Post("/register/{service_type}", r.handleRegisterPublic)
 	router.Get("/services", r.handleGetServices)
@@ -99,20 +120,17 @@ func (r *Registry) RegisterPublicRoutes(router chi.Router) {
 	router.Get("/config", r.handleGetConfig)
 	router.Get("/health", func(w http.ResponseWriter, req *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("ok"))
 	})
 }
 
-// handleAdminRegister handles authenticated registration for servers and aggregators.
 func (r *Registry) handleAdminRegister(w http.ResponseWriter, req *http.Request) {
 	r.handleRegister(w, req)
 }
 
-// handleRegisterPublic handles public registration (clients only when admin auth is configured).
 func (r *Registry) handleRegisterPublic(w http.ResponseWriter, req *http.Request) {
 	serviceType := ServiceType(chi.URLParam(req, "service_type"))
 
-	// If admin auth is configured, only allow client registration through public endpoint
 	if r.config != nil && r.config.AdminToken != "" {
 		if serviceType != ClientService {
 			http.Error(w, "use /admin/register for servers and aggregators", http.StatusForbidden)
@@ -130,7 +148,7 @@ func (r *Registry) handleRegister(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	var signedReq protocol.Signed[ServiceRegistrationRequest]
+	var signedReq protocol.Signed[RegisteredService]
 	if err := json.NewDecoder(req.Body).Decode(&signedReq); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -138,7 +156,7 @@ func (r *Registry) handleRegister(w http.ResponseWriter, req *http.Request) {
 
 	regReq, signer, err := signedReq.Recover()
 	if err != nil {
-		http.Error(w, fmt.Errorf("invalid signature: %w", err).Error(), http.StatusForbidden)
+		http.Error(w, fmt.Sprintf("invalid signature: %v", err), http.StatusForbidden)
 		return
 	}
 
@@ -158,23 +176,13 @@ func (r *Registry) handleRegister(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	exchangeKey, err := hex.DecodeString(regReq.ExchangeKey)
-	if err != nil {
+	if _, err := hex.DecodeString(regReq.ExchangeKey); err != nil {
 		http.Error(w, "invalid exchange key", http.StatusBadRequest)
 		return
 	}
 
-	svc := &RegisteredService{
-		Type:           serviceType,
-		Endpoint:       regReq.HTTPEndpoint,
-		PublicKey:      pubKey,
-		ExchangePubKey: exchangeKey,
-		Attestation:    regReq.Attestation,
-		Signature:      signedReq.Signature,
-	}
-
 	if r.config != nil && r.config.AttestationProvider != nil {
-		_, err := VerifyServiceInfo(r.config.MeasurementSource, r.config.AttestationProvider, svc.ToServiceInfo())
+		_, err := VerifyRegistration(r.config.MeasurementSource, r.config.AttestationProvider, &signedReq)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("attestation verification failed: %v", err), http.StatusForbidden)
 			return
@@ -182,13 +190,23 @@ func (r *Registry) handleRegister(w http.ResponseWriter, req *http.Request) {
 	}
 
 	r.mu.Lock()
-	r.services[serviceType][pubKey.String()] = svc
+	r.services[serviceType][pubKey.String()] = &signedReq
 	r.mu.Unlock()
 
-	json.NewEncoder(w).Encode(&ServiceRegistrationResponse{
+	// Persist to store if configured
+	if r.config.Store != nil {
+		if err := r.config.Store.SaveService(&signedReq); err != nil {
+			// Log but don't fail the request - service is in memory
+			fmt.Printf("Warning: failed to persist service registration: %v\n", err)
+		}
+	}
+
+	if err := json.NewEncoder(w).Encode(&ServiceRegistrationResponse{
 		Success:   true,
 		PublicKey: pubKey.String(),
-	})
+	}); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
 }
 
 func (r *Registry) handleUnregister(w http.ResponseWriter, req *http.Request) {
@@ -199,6 +217,12 @@ func (r *Registry) handleUnregister(w http.ResponseWriter, req *http.Request) {
 		delete(typeMap, publicKey)
 	}
 	r.mu.Unlock()
+
+	if r.config.Store != nil {
+		if err := r.config.Store.DeleteService(publicKey); err != nil {
+			fmt.Printf("Warning: failed to delete service from store: %v\n", err)
+		}
+	}
 
 	w.WriteHeader(http.StatusOK)
 }
@@ -212,7 +236,9 @@ func (r *Registry) handleGetServices(w http.ResponseWriter, req *http.Request) {
 	}
 	r.mu.RUnlock()
 
-	json.NewEncoder(w).Encode(resp)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
 }
 
 func (r *Registry) handleGetServicesByType(w http.ResponseWriter, req *http.Request) {
@@ -226,29 +252,25 @@ func (r *Registry) handleGetServicesByType(w http.ResponseWriter, req *http.Requ
 	services := r.collectServices(svcType)
 	r.mu.RUnlock()
 
-	json.NewEncoder(w).Encode(services)
+	if err := json.NewEncoder(w).Encode(services); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
 }
 
 func (r *Registry) handleGetConfig(w http.ResponseWriter, req *http.Request) {
-	json.NewEncoder(w).Encode(r.adcConfig)
+	if err := json.NewEncoder(w).Encode(r.adcConfig); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
 }
 
-func (r *Registry) collectServices(serviceType ServiceType) []*ServiceInfo {
+func (r *Registry) collectServices(serviceType ServiceType) []*protocol.Signed[RegisteredService] {
 	typeMap := r.services[serviceType]
-	result := make([]*ServiceInfo, 0, len(typeMap))
+	result := make([]*protocol.Signed[RegisteredService], 0, len(typeMap))
 	for _, svc := range typeMap {
-		result = append(result, svc.ToServiceInfo())
+		result = append(result, svc)
 	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Object.PublicKey < result[j].Object.PublicKey })
 	return result
-}
-
-// Valid returns true if the service type is recognized.
-func (t ServiceType) Valid() bool {
-	switch t {
-	case ClientService, AggregatorService, ServerService:
-		return true
-	}
-	return false
 }
 
 // ReportDataForService computes the attestation report data binding service identity.
@@ -261,7 +283,7 @@ func ReportDataForService(exchangeKey []byte, httpEndpoint string, pubKey crypto
 }
 
 // AttestServiceRegistration generates attestation evidence for a service.
-func AttestServiceRegistration(attestationProvider TEEProvider, r *ServiceRegistrationRequest) ([]byte, error) {
+func AttestServiceRegistration(attestationProvider TEEProvider, r *RegisteredService) ([]byte, error) {
 	if attestationProvider == nil {
 		return nil, nil
 	}
@@ -270,60 +292,39 @@ func AttestServiceRegistration(attestationProvider TEEProvider, r *ServiceRegist
 	return attestationProvider.Attest(reportData)
 }
 
-// VerifyServiceInfo verifies attestation for a discovered service.
-func VerifyServiceInfo(source MeasurementSource, attestationProvider TEEProvider, info *ServiceInfo) (Measurements, error) {
-	pubKey, err := crypto.NewPublicKeyFromString(info.PublicKey)
-	if err != nil {
-		return nil, fmt.Errorf("invalid public key: %w", err)
-	}
-
-	req := &ServiceRegistrationRequest{
-		ServiceType:  info.ServiceType,
-		PublicKey:    info.PublicKey,
-		ExchangeKey:  info.ExchangeKey,
-		HTTPEndpoint: info.HTTPEndpoint,
-		Attestation:  info.Attestation,
-	}
-
-	return VerifyRegistrationRequest(source, attestationProvider, (&protocol.Signed[ServiceRegistrationRequest]{
-		PublicKey: pubKey,
-		Signature: info.Signature,
-		Object:    req,
-	}))
-}
-
-func VerifyRegistrationRequest(source MeasurementSource, attestationProvider TEEProvider, signedReq *protocol.Signed[ServiceRegistrationRequest]) (Measurements, error) {
+// VerifyRegistration verifies attestation for a signed registration.
+func VerifyRegistration(source MeasurementSource, attestationProvider TEEProvider, signedReq *protocol.Signed[RegisteredService]) (Measurements, error) {
 	rr, signer, err := signedReq.Recover()
 	if err != nil {
 		return nil, err
 	}
 	if signer.String() != rr.PublicKey {
-		return nil, errors.New("pubkey mismatch")
+		return nil, fmt.Errorf("pubkey mismatch")
 	}
 
 	if attestationProvider == nil {
 		return nil, nil
 	}
 	if len(rr.Attestation) == 0 {
-		return nil, errors.New("no attestation data")
+		return nil, fmt.Errorf("no attestation data")
 	}
 
 	var reportData [64]byte
 	copy(reportData[:], ReportDataForService([]byte(rr.ExchangeKey), rr.HTTPEndpoint, crypto.PublicKey(rr.PublicKey)))
 	measurements, err := attestationProvider.Verify(rr.Attestation, reportData)
 	if err != nil {
-		return nil, fmt.Errorf("could not verify attestation: %w", err)
+		return nil, fmt.Errorf("verifying attestation: %w", err)
 	}
 
 	if source != nil {
 		allowedMeasurements, err := source.GetAllowedMeasurements()
 		if err != nil {
-			return nil, fmt.Errorf("could not fetch allowed measurements: %w", err)
+			return nil, fmt.Errorf("fetching allowed measurements: %w", err)
 		}
 
 		_, err = VerifyMeasurementsMatch(allowedMeasurements, measurements)
 		if err != nil {
-			return nil, fmt.Errorf("attestation is not allowed: %w", err)
+			return nil, fmt.Errorf("attestation not allowed: %w", err)
 		}
 	}
 

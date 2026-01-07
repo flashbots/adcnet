@@ -144,7 +144,10 @@ func TestE2E(t *testing.T) {
 	require.Len(t, talkingClients, 2, recoveredChunks)
 
 	agg := &AggregatorMessager{Config: config}
-	aggregatedMessage, err := agg.AggregateClientMessages(2, nil, clientMsgs, clientPubkeys)
+
+	verifiedMessages, err := VerifyClientMessages(clientMsgs)
+	require.NoError(t, err)
+	aggregatedMessage, err := agg.AggregateVerifiedMessages(2, nil, verifiedMessages, clientPubkeys)
 	require.NoError(t, err)
 
 	partialDecryptionMessages := make([]*ServerPartialDecryptionMessage, len(servers))
