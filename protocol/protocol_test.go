@@ -48,8 +48,8 @@ func TestBlindingClient(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, roundMessage)
 
-	s1MessageBlindingVector := crypto.DeriveXorBlindingVector([]crypto.SharedKey{append([]byte{1}, sharedSecret("c1s1")...)}, 1, int32(config.MessageLength))
-	s2MessageBlindingVector := crypto.DeriveXorBlindingVector([]crypto.SharedKey{append([]byte{1}, sharedSecret("c1s2")...)}, 1, int32(config.MessageLength))
+	s1MessageBlindingVector := crypto.DeriveXorBlindingVector([]crypto.SharedKey{append([]byte{1}, sharedSecret("c1s1")...)}, 1, config.MessageLength)
+	s2MessageBlindingVector := crypto.DeriveXorBlindingVector([]crypto.SharedKey{append([]byte{1}, sharedSecret("c1s2")...)}, 1, config.MessageLength)
 
 	sEval := crypto.XorInplace(s1MessageBlindingVector, s2MessageBlindingVector)
 	unblindedMessage := crypto.XorInplace(sEval, roundMessage.MessageVector)

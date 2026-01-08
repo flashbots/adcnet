@@ -52,6 +52,7 @@ func TestServices(t *testing.T) {
 	}
 
 	advanceRound(Round{1, ClientRoundContext})
+	advanceRound(Round{2, ClientRoundContext})
 
 	require.NoError(t, server1.RegisterClient(clientPubkey, clientExchangeKey.PublicKey()))
 	require.NoError(t, server2.RegisterClient(clientPubkey, clientExchangeKey.PublicKey()))
@@ -71,6 +72,15 @@ func TestServices(t *testing.T) {
 	require.NoError(t, client.ScheduleMessageForNextRound(testMessage, bidValue))
 
 	message, shouldSend, err := client.MessagesForCurrentRound()
+	require.Error(t, err)
+
+	client.ProcessRoundBroadcast(&RoundBroadcast{
+		RoundNumber:   1,
+		AuctionVector: blind_auction.NewIBFVector(config.AuctionSlots),
+		MessageVector: []byte{},
+	})
+
+	message, shouldSend, err = client.MessagesForCurrentRound()
 	require.NoError(t, err)
 	require.False(t, shouldSend)
 
@@ -104,8 +114,8 @@ func TestServices(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, srb)
 
-	require.Equal(t, 1, srb.RoundNumber)
-	require.Equal(t, make([]byte, 640), srb.MessageVector)
+	require.Equal(t, 2, srb.RoundNumber)
+	require.Equal(t, []byte{}, srb.MessageVector)
 
 	chunks, err := srb.AuctionVector.Recover()
 	require.NoError(t, err, srb.AuctionVector)
@@ -114,7 +124,7 @@ func TestServices(t *testing.T) {
 
 	require.NoError(t, client.ProcessRoundBroadcast(srb))
 
-	advanceRound(Round{2, ClientRoundContext})
+	advanceRound(Round{3, ClientRoundContext})
 
 	// Now verify client sends the message!
 

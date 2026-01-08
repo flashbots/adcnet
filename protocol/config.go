@@ -36,4 +36,7 @@ type AuctionResult struct {
 
 	// MessageStartIndex is the byte offset where the message should be placed.
 	MessageStartIndex int
+
+	// TotalAllocated indicates how many total bytes have been allocated by the auction
+	TotalAllocated int
 }

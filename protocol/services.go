@@ -364,7 +364,7 @@ func (c *ClientService) MessagesForCurrentRound() (*Signed[ClientRoundMessage], 
 
 	previousRoundData := c.roundData[c.currentRound-1]
 	if previousRoundData == nil {
-		previousRoundData = &ClientRoundData{}
+		return nil, false, errors.New("previous round result not known")
 	}
 
 	currentRoundData := c.roundData[c.currentRound]
@@ -387,6 +387,9 @@ func (c *ClientService) ProcessRoundBroadcast(rb *RoundBroadcast) error {
 	c.roundMutex.Lock()
 	defer c.roundMutex.Unlock()
 
+	if c.roundData[rb.RoundNumber] == nil {
+		c.roundData[rb.RoundNumber] = &ClientRoundData{}
+	}
 	c.roundData[rb.RoundNumber].roundOutput = rb
 	return nil
 }

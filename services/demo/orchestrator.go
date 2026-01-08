@@ -168,7 +168,7 @@ func (o *Orchestrator) deployRegistry() error {
 	o.registryURL = fmt.Sprintf("http://%s", registryAddr)
 
 	registryConfig := &services.RegistryConfig{
-		AttestationProvider: o.attestationProvider,
+		AttestationVerifier: o.attestationProvider,
 		MeasurementSource:   o.measurementSource,
 		AdminToken:          o.config.AdminToken,
 	}

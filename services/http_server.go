@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 
+	blind_auction "github.com/flashbots/adcnet/blind-auction"
 	"github.com/flashbots/adcnet/crypto"
 	"github.com/flashbots/adcnet/protocol"
 	"github.com/go-chi/chi/v5"
@@ -133,6 +134,19 @@ func (s *HTTPServer) handleRoundTransitions(ctx context.Context) {
 					go s.sharePartialDecryption(s.currentPartialDecryption)
 				}
 				s.currentPartialDecryption = nil
+			} else if round.Context == protocol.ServerLeaderRoundContext && s.isLeader {
+				if _, found := s.roundBroadcasts[round.Number]; !found {
+					srb, err := s.finalizeRound(&protocol.RoundBroadcast{
+						RoundNumber:   round.Number,
+						AuctionVector: blind_auction.NewIBFVector(s.config.ADCNetConfig.AuctionSlots),
+						MessageVector: []byte{},
+					})
+					if err != nil {
+						fmt.Println(fmt.Errorf("could not finalize empty round: %w", err))
+					} else {
+						s.roundBroadcasts[round.Number] = srb
+					}
+				}
 			}
 			s.mu.Unlock()
 		}
@@ -219,23 +233,36 @@ func (s *HTTPServer) handlePartialDecryption(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	var signedBroadcast *protocol.Signed[protocol.RoundBroadcast]
-	if broadcast != nil {
-		signedBroadcast, err = protocol.NewSigned(s.signingKey, broadcast)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		s.roundBroadcasts[broadcast.RoundNumber] = signedBroadcast
-
-		if s.roundOutputCallback != nil {
-			go s.roundOutputCallback(broadcast)
-		}
+	if broadcast == nil {
+		w.WriteHeader(http.StatusOK)
+		return
 	}
+
+	signedBroadcast, err := s.finalizeRound(broadcast)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	s.roundBroadcasts[broadcast.RoundNumber] = signedBroadcast
 
 	if err := json.NewEncoder(w).Encode(&RoundBroadcastResponse{Broadcast: signedBroadcast}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
+}
+
+func (s *HTTPServer) finalizeRound(broadcast *protocol.RoundBroadcast) (*protocol.Signed[protocol.RoundBroadcast], error) {
+	signedBroadcast, err := protocol.NewSigned(s.signingKey, broadcast)
+	if err != nil {
+		return nil, err
+	}
+
+	if s.roundOutputCallback != nil {
+		go s.roundOutputCallback(broadcast)
+	}
+
+	return signedBroadcast, nil
 }
 
 func (s *HTTPServer) handleGetRoundBroadcast(w http.ResponseWriter, r *http.Request) {
