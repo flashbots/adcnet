@@ -138,10 +138,10 @@ const phases = [
 function PhaseIndicator({ roundData }) {
   if (!roundData) {
     return (
-      <div className="bg-slate-800 rounded-xl p-6 border border-slate-700 animate-pulse">
-        <div className="h-6 bg-slate-700 rounded w-32 mb-4" />
+      <div className="bg-slate-800 rounded-xl p-4 border border-slate-700 animate-pulse">
+        <div className="h-5 bg-slate-700 rounded w-32 mb-3" />
         <div className="flex gap-2">
-          {[0,1,2,3].map(i => <div key={i} className="flex-1 h-16 bg-slate-700 rounded-lg" />)}
+          {[0,1,2,3].map(i => <div key={i} className="flex-1 h-12 bg-slate-700 rounded-lg" />)}
         </div>
       </div>
     );
@@ -150,13 +150,13 @@ function PhaseIndicator({ roundData }) {
   const { number, phase_index, progress } = roundData;
 
   return (
-    <div className="bg-slate-800 rounded-xl p-6 border border-slate-700">
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-lg font-semibold text-white flex items-center gap-2">
-          <Clock className="w-5 h-5 text-cyan-400" />
+    <div className="bg-slate-800 rounded-xl p-4 border border-slate-700">
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-base font-semibold text-white flex items-center gap-2">
+          <Clock className="w-4 h-4 text-cyan-400" />
           Round {number}
         </h2>
-        <span className="text-sm text-slate-400">Phase {phase_index + 1}/4</span>
+        <span className="text-xs text-slate-400">Phase {phase_index + 1}/4</span>
       </div>
       
       <div className="flex items-center gap-2">
@@ -168,12 +168,12 @@ function PhaseIndicator({ roundData }) {
           return (
             <div key={phase.id} className="flex-1 flex flex-col items-center">
               <div className={`
-                w-12 h-12 rounded-full flex items-center justify-center mb-2 transition-all duration-300
+                w-10 h-10 rounded-full flex items-center justify-center mb-1.5 transition-all duration-300
                 ${isActive ? 'bg-cyan-500 text-white scale-110 shadow-lg shadow-cyan-500/30' : 
                   isComplete ? 'bg-green-500/20 text-green-400' : 
                   'bg-slate-700 text-slate-500'}
               `}>
-                <Icon className="w-5 h-5" />
+                <Icon className="w-4 h-4" />
               </div>
               <span className={`text-xs font-medium ${isActive ? 'text-cyan-400' : 'text-slate-500'}`}>
                 {phase.name}
@@ -183,14 +183,14 @@ function PhaseIndicator({ roundData }) {
         })}
       </div>
       
-      <div className="mt-4 h-1.5 bg-slate-700 rounded-full overflow-hidden">
+      <div className="mt-3 h-1.5 bg-slate-700 rounded-full overflow-hidden">
         <div 
           className="h-full bg-gradient-to-r from-cyan-500 to-blue-500 transition-all duration-300"
           style={{ width: `${((phase_index + progress) / 4) * 100}%` }}
         />
       </div>
       
-      <p className="text-sm text-slate-400 mt-3 text-center">
+      <p className="text-xs text-slate-400 mt-2 text-center">
         {phases[phase_index]?.desc}
       </p>
     </div>
@@ -252,8 +252,10 @@ function ServiceCard({ type, services }) {
   );
 }
 
-function MessageStream({ messages }) {
+function MessagePanel({ messages, onSend, sending }) {
   const streamRef = useRef(null);
+  const [message, setMessage] = useState('');
+  const [bid, setBid] = useState(100);
   
   useEffect(() => {
     if (streamRef.current) {
@@ -276,59 +278,7 @@ function MessageStream({ messages }) {
   
   return (
     <div className="bg-slate-800 rounded-xl border border-slate-700 flex flex-col h-full">
-      <div className="p-4 border-b border-slate-700 flex items-center justify-between">
-        <h2 className="font-semibold text-white flex items-center gap-2 text-sm">
-          <MessageSquare className="w-4 h-4 text-cyan-400" />
-          Messages
-        </h2>
-        <span className="text-xs text-slate-400">{messages.length} messages</span>
-      </div>
-      
-      <div ref={streamRef} className="flex-1 overflow-y-auto p-3 space-y-2 min-h-0">
-        {messages.length === 0 ? (
-          <div className="h-24 flex items-center justify-center text-slate-500 text-sm">
-            <p>Waiting for messages...</p>
-          </div>
-        ) : (
-          messages.map((msg, idx) => (
-            <div key={`${msg.round}-${msg.offset}-${idx}`} className="bg-slate-900/50 rounded-lg p-2.5 border border-slate-700/50">
-              <div className="flex items-center justify-between mb-1.5">
-                <span className="text-xs font-medium text-cyan-400">Round {msg.round}</span>
-                <span className="text-xs text-slate-500">{msg.time}</span>
-              </div>
-              <p className="text-xs text-slate-200 font-mono break-all">
-                {msg.binary ? `[binary: ${msg.content.slice(0, 32)}...]` : msg.content}
-              </p>
-              <div className="flex gap-3 mt-1.5 text-xs text-slate-500">
-                <span>Offset: {msg.offset}</span>
-                <span>Size: {msg.size}b</span>
-              </div>
-            </div>
-          ))
-        )}
-      </div>
-    </div>
-  );
-}
-
-function SendMessage({ onSend, sending }) {
-  const [message, setMessage] = useState('');
-  const [bid, setBid] = useState(100);
-  
-  const handleSend = () => {
-    if (!message.trim()) return;
-    onSend(message, bid);
-    setMessage('');
-  };
-  
-  return (
-    <div className="bg-slate-800 rounded-xl border border-slate-700 p-4">
-      <h2 className="font-semibold text-white flex items-center gap-2 mb-4">
-        <Send className="w-5 h-5 text-cyan-400" />
-        Send Anonymous Message
-      </h2>
-      
-      <div className="space-y-4">
+      <div className="p-3 border-b border-slate-700 space-y-2">
         <textarea
           value={message}
           onChange={(e) => setMessage(e.target.value)}
@@ -362,28 +312,38 @@ function SendMessage({ onSend, sending }) {
             Send
           </button>
         </div>
-        
-        <button
-          onClick={handleSend}
-          disabled={!message.trim() || sending}
-          className="w-full py-3 bg-gradient-to-r from-cyan-500 to-blue-500 text-white font-semibold rounded-lg hover:from-cyan-400 hover:to-blue-400 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
-        >
-          {sending ? (
-            <>
-              <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-              Submitting...
-            </>
-          ) : (
-            <>
-              <Send className="w-4 h-4" />
-              Send Anonymously
-            </>
-          )}
-        </button>
-        
-        <p className="text-xs text-slate-500 text-center">
-          ⚠️ Demo mode: Message routed through demo client
-        </p>
+      </div>
+
+      <div className="p-3 border-b border-slate-700 flex items-center justify-between">
+        <h2 className="font-semibold text-white flex items-center gap-2 text-sm">
+          <MessageSquare className="w-4 h-4 text-cyan-400" />
+          Messages
+        </h2>
+        <span className="text-xs text-slate-400">{messages.length} received</span>
+      </div>
+      
+      <div ref={streamRef} className="flex-1 overflow-y-auto p-3 space-y-2 min-h-0">
+        {messages.length === 0 ? (
+          <div className="h-24 flex items-center justify-center text-slate-500 text-sm">
+            <p>Waiting for messages...</p>
+          </div>
+        ) : (
+          messages.map((msg, idx) => (
+            <div key={`${msg.round}-${msg.offset}-${idx}`} className="bg-slate-900/50 rounded-lg p-2.5 border border-slate-700/50">
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="text-xs font-medium text-cyan-400">Round {msg.round}</span>
+                <span className="text-xs text-slate-500">{msg.time}</span>
+              </div>
+              <p className="text-xs text-slate-200 font-mono break-all">
+                {msg.binary ? `[binary: ${msg.content.slice(0, 32)}...]` : msg.content}
+              </p>
+              <div className="flex gap-3 mt-1.5 text-xs text-slate-500">
+                <span>Offset: {msg.offset}</span>
+                <span>Size: {msg.size}b</span>
+              </div>
+            </div>
+          ))
+        )}
       </div>
     </div>
   );
@@ -468,9 +428,9 @@ function ConfigPanel({ config }) {
   }
 
   return (
-    <div className="bg-slate-800 rounded-xl border border-slate-700 p-4">
-      <h2 className="font-semibold text-white flex items-center gap-2 mb-4">
-        <Activity className="w-5 h-5 text-cyan-400" />
+    <div className="bg-slate-800 rounded-xl border border-slate-700 p-3">
+      <h2 className="font-semibold text-white flex items-center gap-2 mb-3 text-sm">
+        <Activity className="w-4 h-4 text-cyan-400" />
         Protocol Config
       </h2>
       <div className="space-y-1.5 text-sm">
@@ -478,17 +438,17 @@ function ConfigPanel({ config }) {
           <span className="text-slate-400 text-xs">Round Duration</span>
           <span className="text-white font-mono text-xs">{formatDuration(config.round_duration)}</span>
         </div>
-        <div className="bg-slate-900/50 rounded-lg p-3">
+        <div className="bg-slate-900/50 rounded-lg p-2 flex items-center justify-between">
           <span className="text-slate-400 text-xs">Message Capacity</span>
-          <p className="text-white font-mono">{(config.message_length / 1024).toFixed(0)}KB</p>
+          <span className="text-white font-mono text-xs">{(config.message_length / 1024).toFixed(0)}KB</span>
         </div>
-        <div className="bg-slate-900/50 rounded-lg p-3">
+        <div className="bg-slate-900/50 rounded-lg p-2 flex items-center justify-between">
           <span className="text-slate-400 text-xs">Auction Slots</span>
-          <p className="text-white font-mono">{config.auction_slots}</p>
+          <span className="text-white font-mono text-xs">{config.auction_slots}</span>
         </div>
-        <div className="bg-slate-900/50 rounded-lg p-3">
+        <div className="bg-slate-900/50 rounded-lg p-2 flex items-center justify-between">
           <span className="text-slate-400 text-xs">Min Clients</span>
-          <p className="text-white font-mono">{config.min_clients}</p>
+          <span className="text-white font-mono text-xs">{config.min_clients}</span>
         </div>
       </div>
     </div>
@@ -524,9 +484,14 @@ export default function ADCNetDemo() {
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState(null);
 
-  const { data: config, error: configError } = useAPI('/api/config', 30000);
-  const { data: services, error: servicesError } = useAPI('/api/services', 15000);
-  const { data: roundData, error: roundError } = useAPI('/api/round', 1000);
+  const { data: configData, error: configError } = useAPI('/api/config', 30000);
+  const { data: servicesData, error: servicesError } = useAPI('/api/services', 15000);
+  const { data: roundDataApi, error: roundError } = useAPI('/api/round', 1000);
+
+  // Use mock data when backend is unavailable
+  const config = configData || MOCK_CONFIG;
+  const services = servicesData || MOCK_SERVICES;
+  const roundData = roundDataApi || MOCK_ROUND_DATA;
 
   const handleRoundEvent = useCallback((event) => {
     const timestamp = new Date().toLocaleTimeString();
