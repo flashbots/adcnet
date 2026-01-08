@@ -129,27 +129,6 @@ type ServerPartialDecryptionMessage struct {
 	MessageVector     []byte     // Server's XOR blinding vector
 }
 
-// Clone creates a deep copy of the message.
-func (m *ServerPartialDecryptionMessage) Clone() *ServerPartialDecryptionMessage {
-	ret := &ServerPartialDecryptionMessage{
-		ServerID:          m.ServerID,
-		OriginalAggregate: m.OriginalAggregate,
-		UserPKs:           make([]crypto.PublicKey, len(m.UserPKs)),
-		AuctionVector:     make([]*big.Int, len(m.AuctionVector)),
-		MessageVector:     make([]byte, len(m.MessageVector)),
-	}
-
-	copy(ret.UserPKs, m.UserPKs)
-	for i := range ret.AuctionVector {
-		ret.AuctionVector[i] = new(big.Int).Set(m.AuctionVector[i])
-	}
-	for i := range ret.MessageVector {
-		ret.MessageVector[i] = m.MessageVector[i]
-	}
-
-	return ret
-}
-
 // RoundBroadcast contains the final reconstructed broadcast for a round.
 type RoundBroadcast struct {
 	RoundNumber   int

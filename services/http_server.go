@@ -135,6 +135,9 @@ func (s *HTTPServer) handleRoundTransitions(ctx context.Context) {
 				}
 				s.currentPartialDecryption = nil
 			} else if round.Context == protocol.ServerLeaderRoundContext && s.isLeader {
+				// Create empty broadcast if no messages were processed this round.
+				// This ensures clients can always fetch a broadcast for completed rounds,
+				// which they need to determine the message vector size for their submissions.
 				if _, found := s.roundBroadcasts[round.Number]; !found {
 					srb, err := s.finalizeRound(&protocol.RoundBroadcast{
 						RoundNumber:   round.Number,

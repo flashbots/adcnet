@@ -58,17 +58,8 @@ func DeriveXorBlindingVector(sharedSecrets []SharedKey, round uint32, nBytes int
 	if nBytes == 0 {
 		return []byte{}
 	}
-	// round to whole AES block
-	nBlocks := nBytes / aes.BlockSize
-	roundedNBytes := nBlocks * aes.BlockSize
-	if roundedNBytes < nBytes {
-		roundedNBytes += aes.BlockSize
-	}
-	srcBytesBuf := make([]byte, roundedNBytes)
-	dstBytesBuf := make([]byte, roundedNBytes)
 
-	res := make([]byte, roundedNBytes)
-
+	res := make([]byte, nBytes)
 	roundKeyBuf := make([]byte, 4+len(sharedSecrets[0]))
 	binary.BigEndian.PutUint32(roundKeyBuf[:4], round)
 
@@ -81,9 +72,16 @@ func DeriveXorBlindingVector(sharedSecrets []SharedKey, round uint32, nBytes int
 			panic(err.Error())
 		}
 
-		block.Encrypt(dstBytesBuf, srcBytesBuf)
-		XorInplace(res, dstBytesBuf)
+		// Encrypt in CTR mode or use each block index as input
+		var counter [aes.BlockSize]byte
+		var cipherBlock [aes.BlockSize]byte
+		for i := 0; i < nBytes; i += aes.BlockSize {
+			binary.BigEndian.PutUint64(counter[8:], uint64(i/aes.BlockSize))
+			block.Encrypt(cipherBlock[:], counter[:])
+			end := min(i+aes.BlockSize, nBytes)
+			XorInplace(res[i:end], cipherBlock[:end-i])
+		}
 	}
 
-	return res[:nBytes]
+	return res
 }

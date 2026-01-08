@@ -190,6 +190,7 @@ func (a *HTTPAggregator) handleClientMessages(w http.ResponseWriter, r *http.Req
 
 	if err := json.NewEncoder(w).Encode(aggregate); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 }
 
@@ -233,6 +234,7 @@ func (a *HTTPAggregator) handleAggregateMessages(w http.ResponseWriter, r *http.
 
 	if err := json.NewEncoder(w).Encode(result); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 }
 
@@ -255,6 +257,7 @@ func (a *HTTPAggregator) handleGetAggregates(w http.ResponseWriter, r *http.Requ
 
 	if err := json.NewEncoder(w).Encode(currentAggregate); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 }
 

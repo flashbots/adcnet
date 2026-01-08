@@ -11,7 +11,8 @@ type ADCNetConfig struct {
 	// AuctionSlots is the number of slots in the IBF for auction data.
 	AuctionSlots uint32 `json:"auction_slots"`
 
-	// MessageLength is the byte length of the message vector.
+	// MessageLength is the maximum byte capacity of the message vector.
+	// Actual per-round length is determined by auction results.
 	MessageLength int `json:"message_length"`
 
 	// MinClients is the minimum number of clients for anonymity.

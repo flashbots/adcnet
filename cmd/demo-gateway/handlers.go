@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"net/http"
 	"strconv"
 	"time"
@@ -252,8 +253,8 @@ func (g *Gateway) handleSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Use the last client as the demo client
-	client := svcList.Clients[len(svcList.Clients)-1]
+	// Use a random client as the demo client
+	client := svcList.Clients[rand.Int()%len(svcList.Clients)]
 
 	// Parse client's exchange key
 	exchangeKey, err := services.ParseExchangeKey(client.Object.ExchangeKey)
