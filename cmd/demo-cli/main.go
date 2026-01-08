@@ -5,15 +5,10 @@
 // send: Submit a message to the network with an auction bid.
 //
 //	adcnet send --registry=https://adcnet.example.com --message="Hello" --bid=100
-//	adcnet send --registry=https://adcnet.example.com --to=<exchange-pubkey> --message="Secret" --bid=100
 //
 // monitor: Stream round outputs as they complete.
 //
 //	adcnet monitor --registry=https://adcnet.example.com
-//
-// decrypt: Decrypt a message encrypted to your exchange key.
-//
-//	adcnet decrypt --key=<exchange-privkey> --message=<hex-encrypted>
 //
 // status: Display network topology and health.
 //
@@ -79,8 +74,6 @@ func main() {
 		err = runSend(args)
 	case "monitor":
 		err = runMonitor(args)
-	case "decrypt":
-		err = runDecrypt(args)
 	case "status":
 		err = runStatus(args)
 	case "help", "-h", "--help":
@@ -106,7 +99,6 @@ Usage:
 Commands:
   send      Send a message to the network
   monitor   Stream round outputs
-  decrypt   Decrypt a message encrypted to your key
   status    Display network status
 
 Run 'adcnet <command> --help' for command-specific options.`)
@@ -116,14 +108,13 @@ Run 'adcnet <command> --help' for command-specific options.`)
 
 func runSend(args []string) error {
 	var (
-		registryURL  string
-		message      string
-		filePath     string
-		bidValue     uint
-		wait         bool
-		timeout      time.Duration
-		recipientKey string
-		verifyCfg    verificationConfig
+		registryURL string
+		message     string
+		filePath    string
+		bidValue    uint
+		wait        bool
+		timeout     time.Duration
+		verifyCfg   verificationConfig
 	)
 
 	for i := 0; i < len(args); i++ {
@@ -147,11 +138,6 @@ func runSend(args []string) error {
 			i++
 			if i < len(args) {
 				fmt.Sscanf(args[i], "%d", &bidValue)
-			}
-		case "--to", "-t":
-			i++
-			if i < len(args) {
-				recipientKey = args[i]
 			}
 		case "--wait", "-w":
 			wait = true
@@ -197,16 +183,6 @@ func runSend(args []string) error {
 		msgBytes = []byte(message)
 	}
 
-	// Encrypt message if recipient specified
-	if recipientKey != "" {
-		encrypted, err := encryptToRecipient(recipientKey, msgBytes)
-		if err != nil {
-			return fmt.Errorf("encrypt message: %w", err)
-		}
-		msgBytes = encrypted
-		fmt.Printf("Message encrypted to recipient (%d bytes)\n", len(msgBytes))
-	}
-
 	return sendMessage(registryURL, msgBytes, uint32(bidValue), wait, timeout, &verifyCfg)
 }
 
@@ -229,31 +205,8 @@ Options:
   --skip-verification   Skip attestation verification (insecure)
 
 Examples:
-  # Send plaintext message
-  adcnet send -r https://adcnet.example.com -m "Hello ADCNet" -b 100
-
-  # Send encrypted message to specific recipient
-  adcnet send -r https://adcnet.example.com -m "Secret message" -b 100 \
-    --to=04a1b2c3...  # recipient's attested exchange pubkey`)
-}
-
-func encryptToRecipient(recipientKeyHex string, plaintext []byte) ([]byte, error) {
-	keyBytes, err := hex.DecodeString(recipientKeyHex)
-	if err != nil {
-		return nil, fmt.Errorf("invalid recipient key hex: %w", err)
-	}
-
-	recipientPubKey, err := ecdh.P256().NewPublicKey(keyBytes)
-	if err != nil {
-		return nil, fmt.Errorf("invalid recipient public key: %w", err)
-	}
-
-	encrypted, err := crypto.Encrypt(recipientPubKey, plaintext)
-	if err != nil {
-		return nil, err
-	}
-
-	return encrypted.Bytes(), nil
+  # Send message
+  adcnet send -r https://adcnet.example.com -m "Hello ADCNet" -b 100`)
 }
 
 func sendMessage(registryURL string, message []byte, bidValue uint32, wait bool, timeout time.Duration, verifyCfg *verificationConfig) error {
@@ -362,39 +315,6 @@ func verifyServices(signedServices []*protocol.Signed[services.RegisteredService
 	return verified, nil
 }
 
-func registerWithService(httpClient *http.Client, endpoint string, signingKey crypto.PrivateKey, exchangeKey *ecdh.PrivateKey) error {
-	pubKey, _ := signingKey.PublicKey()
-
-	req := &services.RegisteredService{
-		ServiceType:  services.ClientService,
-		PublicKey:    pubKey.String(),
-		ExchangeKey:  hex.EncodeToString(exchangeKey.PublicKey().Bytes()),
-		HTTPEndpoint: "ephemeral://cli-client",
-	}
-
-	signedReq, err := protocol.NewSigned(signingKey, req)
-	if err != nil {
-		return err
-	}
-
-	body, err := json.Marshal(signedReq)
-	if err != nil {
-		return err
-	}
-
-	resp, err := httpClient.Post(endpoint+"/register", "application/json", bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("status %d: %s", resp.StatusCode, string(respBody))
-	}
-	return nil
-}
-
 func waitForMessage(ctx context.Context, httpClient *http.Client, servers []*protocol.Signed[services.RegisteredService], message []byte, config *protocol.ADCNetConfig) error {
 	roundCoord := protocol.NewLocalRoundCoordinator(config.RoundDuration)
 	roundCoord.Start(ctx)
@@ -423,99 +343,6 @@ func waitForMessage(ctx context.Context, httpClient *http.Client, servers []*pro
 			fmt.Printf("Round %d complete, message not found (checking if bid lost auction)\n", broadcast.RoundNumber)
 		}
 	}
-}
-
-// --- Decrypt Command ---
-
-func runDecrypt(args []string) error {
-	var (
-		privateKeyHex string
-		messageHex    string
-		inputFile     string
-	)
-
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--key", "-k":
-			i++
-			if i < len(args) {
-				privateKeyHex = args[i]
-			}
-		case "--message", "-m":
-			i++
-			if i < len(args) {
-				messageHex = args[i]
-			}
-		case "--file", "-f":
-			i++
-			if i < len(args) {
-				inputFile = args[i]
-			}
-		case "--help", "-h":
-			printDecryptHelp()
-			return nil
-		}
-	}
-
-	if privateKeyHex == "" {
-		return fmt.Errorf("--key is required")
-	}
-	if messageHex == "" && inputFile == "" {
-		return fmt.Errorf("--message or --file is required")
-	}
-
-	keyBytes, err := hex.DecodeString(privateKeyHex)
-	if err != nil {
-		return fmt.Errorf("invalid key hex: %w", err)
-	}
-
-	privKey, err := ecdh.P256().NewPrivateKey(keyBytes)
-	if err != nil {
-		return fmt.Errorf("invalid private key: %w", err)
-	}
-
-	var encryptedBytes []byte
-	if inputFile != "" {
-		data, err := os.ReadFile(inputFile)
-		if err != nil {
-			return fmt.Errorf("read file: %w", err)
-		}
-		encryptedBytes = data
-	} else {
-		encryptedBytes, err = hex.DecodeString(messageHex)
-		if err != nil {
-			return fmt.Errorf("invalid message hex: %w", err)
-		}
-	}
-
-	encrypted, err := crypto.ParseEncryptedMessage(encryptedBytes)
-	if err != nil {
-		return fmt.Errorf("parse encrypted message: %w", err)
-	}
-
-	plaintext, err := crypto.Decrypt(privKey, encrypted)
-	if err != nil {
-		return fmt.Errorf("decrypt: %w", err)
-	}
-
-	fmt.Printf("%s\n", string(plaintext))
-	return nil
-}
-
-func printDecryptHelp() {
-	fmt.Println(`adcnet decrypt - Decrypt a message encrypted to your exchange key
-
-Usage:
-  adcnet decrypt --key=<privkey> --message=<hex>
-  adcnet decrypt --key=<privkey> --file=<path>
-
-Options:
-  --key, -k       Your ECDH P-256 private key (hex)
-  --message, -m   Encrypted message (hex)
-  --file, -f      File containing encrypted message (raw bytes)
-
-Example:
-  adcnet decrypt -k a1b2c3... -m 04abc123...`)
 }
 
 // --- Monitor Command ---

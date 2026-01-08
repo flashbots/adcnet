@@ -59,7 +59,6 @@ func main() {
 		adminToken      = flag.String("admin-token", "", "Basic auth token for admin operations (user:pass)")
 		measurementsURL = flag.String("measurements-url", "", "URL for allowed measurements")
 		useTDX          = flag.Bool("tdx", false, "Use real TDX attestation verification")
-		remoteTDXURL    = flag.String("tdx-url", "", "Remote TDX verification service URL")
 		roundDuration   = flag.Duration("round", 0, "Round duration")
 		messageLength   = flag.Int("msg-length", 0, "Message vector length in bytes")
 		auctionSlots    = flag.Uint("auction-slots", 0, "Number of auction slots")
@@ -85,7 +84,7 @@ func main() {
 	}
 
 	applyFlagOverrides(cfg, *addr, *adminToken, *measurementsURL, *useTDX,
-		*remoteTDXURL, *roundDuration, *messageLength, *auctionSlots, *minClients,
+		*roundDuration, *messageLength, *auctionSlots, *minClients,
 		isFlagSet("addr"))
 
 	if err := run(cfg); err != nil {
@@ -102,7 +101,7 @@ func loadConfiguration(configPath string) (*common.Config, error) {
 }
 
 func applyFlagOverrides(cfg *common.Config, addr, adminToken, measurementsURL string,
-	useTDX bool, remoteTDXURL string, roundDuration time.Duration,
+	useTDX bool, roundDuration time.Duration,
 	messageLength int, auctionSlots, minClients uint, addrExplicit bool) {
 
 	if addrExplicit {
@@ -118,9 +117,6 @@ func applyFlagOverrides(cfg *common.Config, addr, adminToken, measurementsURL st
 	}
 	if useTDX {
 		cfg.Attestation.UseTDX = true
-	}
-	if remoteTDXURL != "" {
-		cfg.Attestation.TDXRemoteURL = remoteTDXURL
 	}
 	if roundDuration != 0 {
 		cfg.Protocol.RoundDuration = roundDuration
@@ -138,11 +134,11 @@ func applyFlagOverrides(cfg *common.Config, addr, adminToken, measurementsURL st
 
 func run(cfg *common.Config) error {
 	adcConfig := cfg.Protocol.ToADCNetConfig()
-	attestationProvider := common.NewAttestationProvider(cfg.Attestation)
+	attestationVerifier := common.NewAttestationProvider(cfg.Attestation)
 	measurementSource := common.NewMeasurementSource(cfg.Attestation.MeasurementsURL)
 
 	registryConfig := &services.RegistryConfig{
-		AttestationProvider: attestationProvider,
+		AttestationVerifier: attestationVerifier,
 		MeasurementSource:   measurementSource,
 		AdminToken:          cfg.AdminToken,
 	}

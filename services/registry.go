@@ -15,11 +15,15 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+type TEEVerifier interface {
+	Verify(attestationReport []byte, expectedReportData [64]byte) (map[int][]byte, error)
+}
+
 // TEEProvider abstracts attestation generation and verification.
 type TEEProvider interface {
+	TEEVerifier
 	AttestationType() string
 	Attest(reportData [64]byte) ([]byte, error)
-	Verify(attestationReport []byte, expectedReportData [64]byte) (map[int][]byte, error)
 }
 
 // Measurements maps register indices to expected measurement values.
@@ -35,7 +39,7 @@ type RegistryStore interface {
 // RegistryConfig configures the registry.
 type RegistryConfig struct {
 	MeasurementSource   MeasurementSource
-	AttestationProvider TEEProvider
+	AttestationVerifier TEEVerifier
 	Store               RegistryStore
 	// AdminToken requires basic auth for admin operations when set.
 	AdminToken string
@@ -181,8 +185,8 @@ func (r *Registry) handleRegister(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	if r.config != nil && r.config.AttestationProvider != nil {
-		_, err := VerifyRegistration(r.config.MeasurementSource, r.config.AttestationProvider, &signedReq)
+	if r.config != nil && r.config.AttestationVerifier != nil {
+		_, err := VerifyRegistration(r.config.MeasurementSource, r.config.AttestationVerifier, &signedReq)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("attestation verification failed: %v", err), http.StatusForbidden)
 			return
@@ -293,7 +297,7 @@ func AttestServiceRegistration(attestationProvider TEEProvider, r *RegisteredSer
 }
 
 // VerifyRegistration verifies attestation for a signed registration.
-func VerifyRegistration(source MeasurementSource, attestationProvider TEEProvider, signedReq *protocol.Signed[RegisteredService]) (Measurements, error) {
+func VerifyRegistration(source MeasurementSource, attestationVerifier TEEVerifier, signedReq *protocol.Signed[RegisteredService]) (Measurements, error) {
 	rr, signer, err := signedReq.Recover()
 	if err != nil {
 		return nil, err
@@ -302,7 +306,7 @@ func VerifyRegistration(source MeasurementSource, attestationProvider TEEProvide
 		return nil, fmt.Errorf("pubkey mismatch")
 	}
 
-	if attestationProvider == nil {
+	if attestationVerifier == nil {
 		return nil, nil
 	}
 	if len(rr.Attestation) == 0 {
@@ -311,7 +315,7 @@ func VerifyRegistration(source MeasurementSource, attestationProvider TEEProvide
 
 	var reportData [64]byte
 	copy(reportData[:], ReportDataForService([]byte(rr.ExchangeKey), rr.HTTPEndpoint, crypto.PublicKey(rr.PublicKey)))
-	measurements, err := attestationProvider.Verify(rr.Attestation, reportData)
+	measurements, err := attestationVerifier.Verify(rr.Attestation, reportData)
 	if err != nil {
 		return nil, fmt.Errorf("verifying attestation: %w", err)
 	}

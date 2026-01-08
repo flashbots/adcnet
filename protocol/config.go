@@ -9,19 +9,19 @@ import (
 // ADCNetConfig provides configuration parameters for ADCNet components.
 type ADCNetConfig struct {
 	// AuctionSlots is the number of slots in the IBF for auction data.
-	AuctionSlots uint32
+	AuctionSlots uint32 `json:"auction_slots"`
 
 	// MessageLength is the byte length of the message vector.
-	MessageLength int
+	MessageLength int `json:"message_length"`
 
 	// MinClients is the minimum number of clients for anonymity.
-	MinClients uint32
+	MinClients uint32 `json:"min_clients"`
 
 	// RoundDuration is the time duration of each protocol round.
-	RoundDuration time.Duration
+	RoundDuration time.Duration `json:"round_duration,string"`
 
 	// RoundsPerWindow defines rounds per participation window for rate limiting.
-	RoundsPerWindow uint32
+	RoundsPerWindow uint32 `json:"rounds_per_window"`
 }
 
 // AuctionSlotsForConfig calculates total IBF vector size for the configuration.

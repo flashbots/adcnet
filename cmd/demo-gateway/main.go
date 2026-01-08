@@ -1,32 +1,3 @@
-// Command demo-gateway serves the ADCNet demo website and API.
-//
-// The gateway connects to the registry, discovers services, polls for round
-// broadcasts, and provides a unified API for the demo dashboard. It also
-// proxies message submissions through a designated demo client.
-//
-// # Endpoints
-//
-// API:
-//
-//	GET  /api/config     - Protocol configuration
-//	GET  /api/services   - Registered services with health status
-//	GET  /api/round      - Current round number and phase
-//	GET  /api/rounds/:n  - Historical round data
-//	POST /api/send       - Submit message for anonymous broadcast
-//
-// Streaming:
-//
-//	GET  /events         - SSE stream of round results
-//
-// Static:
-//
-//	GET  /               - Demo dashboard (serves static files)
-//	GET  /health         - Health check
-//
-// # Usage
-//
-//	go run ./cmd/demo-gateway --registry=http://localhost:7999
-//	go run ./cmd/demo-gateway --registry=http://localhost:7999 --static=./web/dist
 package main
 
 import (

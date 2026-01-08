@@ -272,8 +272,10 @@ func (c *ClientMessager) PrepareMessage(currentRound int, previousRoundOutput *R
 		auctionIBF.InsertChunk(currentRoundAuctionData.EncodeToChunk())
 	}
 	auctionElements := auctionIBF.EncodeAsFieldElements()
-
-	messageVector := EncodeMessageToFieldElements(previousAuctionResult, make([]byte, c.Config.MessageLength), previousRoundMessage)
+	messageVector := make([]byte, c.Config.MessageLength)
+	if previousAuctionResult.ShouldSend {
+		copy(messageVector[previousAuctionResult.MessageStartIndex:], previousRoundMessage)
+	}
 	clientMessage, err := c.BlindClientMessage(currentRound, messageVector, auctionElements)
 
 	return clientMessage, previousAuctionResult.ShouldSend, err
@@ -315,27 +317,4 @@ func (c *ClientMessager) BlindClientMessage(currentRound int, messageVector []by
 		AuctionVector: blindedAuctionVector,
 		MessageVector: blindedMessageVector,
 	}, nil
-}
-
-// EncodeMessageToFieldElements places the message at the auction-determined offset.
-func EncodeMessageToFieldElements(previousAuctionResult AuctionResult, messageBytes []byte, messageToEncode []byte) []byte {
-	if previousAuctionResult.ShouldSend {
-		copy(messageBytes[previousAuctionResult.MessageStartIndex:], messageToEncode)
-	}
-	return messageBytes
-}
-
-// DecodeMessageFromFieldElements converts field elements back to raw bytes.
-func DecodeMessageFromFieldElements(msgEls []*big.Int, nBytesInElement int) []byte {
-	msgBytes := make([]byte, len(msgEls)*nBytesInElement)
-	for i, el := range msgEls {
-		if el.Sign() == -1 || el.BitLen() > nBytesInElement*8 {
-			for j := i * nBytesInElement; j < (i+1)*nBytesInElement; j++ {
-				msgBytes[j] = 0
-			}
-			continue
-		}
-		el.FillBytes(msgBytes[i*nBytesInElement : (i+1)*nBytesInElement])
-	}
-	return msgBytes
 }
