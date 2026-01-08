@@ -262,6 +262,19 @@ func (a *AggregatorService) CurrentAggregates() *AggregatedClientMessages {
 	return nil
 }
 
+// PendingMessage represents a message submitted by the user, awaiting auction bid submission.
+type PendingMessage struct {
+	Message     []byte
+	AuctionData *blind_auction.AuctionData
+}
+
+// ScheduledMessage represents a message whose auction bid has been submitted,
+// awaiting auction resolution and potential transmission.
+type ScheduledMessage struct {
+	Message      []byte
+	AuctionRound int // Round when the auction bid was submitted
+}
+
 // ClientService manages client-side protocol operations.
 type ClientService struct {
 	config      *ADCNetConfig
@@ -273,14 +286,17 @@ type ClientService struct {
 
 	roundMutex   sync.Mutex
 	currentRound int
-	roundData    map[int]*ClientRoundData
-}
 
-// ClientRoundData holds per-round client state.
-type ClientRoundData struct {
-	roundOutput      *RoundBroadcast
-	messageScheduled []byte
-	auctionData      *blind_auction.AuctionData
+	// pendingMessage holds a message submitted by the user via ScheduleMessageForNextRound.
+	// Cleared when its auction bid is included in MessagesForCurrentRound.
+	pendingMessage *PendingMessage
+
+	// scheduledMessage holds a message whose auction bid has been submitted.
+	// Cleared after auction resolution in the following round.
+	scheduledMessage *ScheduledMessage
+
+	// lastBroadcast holds the most recent round broadcast for auction resolution.
+	lastBroadcast *RoundBroadcast
 }
 
 // NewClientService creates a client service.
@@ -290,7 +306,6 @@ func NewClientService(config *ADCNetConfig, signingKey crypto.PrivateKey, exchan
 		signingKey:    signingKey,
 		exchangeKey:   exchangeKey,
 		sharedSecrets: make(map[ServerID]crypto.SharedKey),
-		roundData:     make(map[int]*ClientRoundData),
 	}
 }
 
@@ -303,11 +318,12 @@ func (c *ClientService) AdvanceToRound(round Round) {
 		return
 	}
 
-	c.currentRound = round.Number
-
-	if c.roundData[round.Number] == nil {
-		c.roundData[round.Number] = &ClientRoundData{}
+	// Clear stale scheduled message if its resolution window has passed.
+	if c.scheduledMessage != nil && c.scheduledMessage.AuctionRound+1 < round.Number {
+		c.scheduledMessage = nil
 	}
+
+	c.currentRound = round.Number
 }
 
 // RegisterServer establishes a shared secret with a server via ECDH.
@@ -334,42 +350,66 @@ func (c *ClientService) DeregisterServer(serverId ServerID) error {
 }
 
 // ScheduleMessageForNextRound queues a message with a bid value for the auction.
+// The auction bid will be submitted in the current round's MessagesForCurrentRound call;
+// if won, the message transmits in the following round.
 func (c *ClientService) ScheduleMessageForNextRound(msg []byte, bidValue uint32) error {
 	c.roundMutex.Lock()
 	defer c.roundMutex.Unlock()
 
-	// Safety check
 	if msg == nil {
-		return errors.New("refusing to schedule empty message")
+		return errors.New("message cannot be nil")
 	}
 
-	if _, exists := c.roundData[c.currentRound]; !exists {
+	if c.currentRound == 0 {
 		return errors.New("client not yet initialized")
 	}
 
-	if c.roundData[c.currentRound].messageScheduled != nil {
-		return errors.New("another message already scheduled")
+	if c.pendingMessage != nil {
+		return errors.New("another message already pending")
 	}
 
-	c.roundData[c.currentRound].messageScheduled = msg
-	c.roundData[c.currentRound].auctionData = blind_auction.AuctionDataFromMessage(msg, bidValue)
+	c.pendingMessage = &PendingMessage{
+		Message:     msg,
+		AuctionData: blind_auction.AuctionDataFromMessage(msg, bidValue),
+	}
 
 	return nil
 }
 
 // MessagesForCurrentRound generates the blinded message for the current round.
+// Returns the signed message, whether a scheduled message won its auction, and any error.
 func (c *ClientService) MessagesForCurrentRound() (*Signed[ClientRoundMessage], bool, error) {
 	c.roundMutex.Lock()
 	defer c.roundMutex.Unlock()
 
-	previousRoundData := c.roundData[c.currentRound-1]
-	if previousRoundData == nil {
-		return nil, false, errors.New("previous round result not known")
+	if c.lastBroadcast == nil || c.lastBroadcast.RoundNumber != c.currentRound-1 {
+		return nil, false, errors.New("previous round broadcast not available")
 	}
 
-	currentRoundData := c.roundData[c.currentRound]
+	// Resolve auction for scheduled message from previous round
+	var messageToTransmit []byte
+	if c.scheduledMessage != nil && c.scheduledMessage.AuctionRound == c.currentRound-1 {
+		messageToTransmit = c.scheduledMessage.Message
+		c.scheduledMessage = nil
+	}
 
-	msg, wonAuction, err := (&ClientMessager{Config: c.config, SharedSecrets: c.sharedSecrets}).PrepareMessage(c.currentRound, previousRoundData.roundOutput, previousRoundData.messageScheduled, currentRoundData.auctionData)
+	// Include auction bid for pending message
+	var auctionBid *blind_auction.AuctionData
+	if c.pendingMessage != nil {
+		auctionBid = c.pendingMessage.AuctionData
+		c.scheduledMessage = &ScheduledMessage{
+			Message:      c.pendingMessage.Message,
+			AuctionRound: c.currentRound,
+		}
+		c.pendingMessage = nil
+	}
+
+	msg, wonAuction, err := (&ClientMessager{Config: c.config, SharedSecrets: c.sharedSecrets}).PrepareMessage(
+		c.currentRound,
+		c.lastBroadcast,
+		messageToTransmit,
+		auctionBid,
+	)
 	if err != nil {
 		return nil, false, err
 	}
@@ -382,14 +422,11 @@ func (c *ClientService) MessagesForCurrentRound() (*Signed[ClientRoundMessage], 
 	return signedMsg, wonAuction, nil
 }
 
-// ProcessRoundBroadcast stores the reconstructed broadcast for auction results.
+// ProcessRoundBroadcast stores the reconstructed broadcast for auction resolution.
 func (c *ClientService) ProcessRoundBroadcast(rb *RoundBroadcast) error {
 	c.roundMutex.Lock()
 	defer c.roundMutex.Unlock()
 
-	if c.roundData[rb.RoundNumber] == nil {
-		c.roundData[rb.RoundNumber] = &ClientRoundData{}
-	}
-	c.roundData[rb.RoundNumber].roundOutput = rb
+	c.lastBroadcast = rb
 	return nil
 }

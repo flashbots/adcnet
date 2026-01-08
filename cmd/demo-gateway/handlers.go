@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/rand/v2"
+	"math/rand"
 	"net/http"
 	"strconv"
 	"time"
@@ -260,6 +260,7 @@ func (g *Gateway) handleSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Prepare message payload
 	msgData := services.HTTPClientMessage{
 		Message: []byte(req.Message),
 		Value:   req.Bid,

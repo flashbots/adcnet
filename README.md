@@ -7,7 +7,7 @@ ADCNet is a Go implementation of an anonymous distributed communication network 
 
 ## Overview
 
-ADCNet enables participants to broadcast messages anonymously. Message sender identity remain hidden as long as one server does is honest. The protocol uses an Invertible Bloom Filter (IBF) based auction system for fair and efficient message scheduling.
+ADCNet enables participants to broadcast messages anonymously. Message sender identity remains hidden as long as one server is honest. The protocol uses an Invertible Bloom Filter (IBF) based auction system for fair and efficient message scheduling.
 
 ## Architecture
 
