@@ -75,10 +75,10 @@ const phases = [
 function PhaseIndicator({ roundData }) {
   if (!roundData) {
     return (
-      <div className="bg-slate-800 rounded-xl p-6 border border-slate-700 animate-pulse">
-        <div className="h-6 bg-slate-700 rounded w-32 mb-4" />
+      <div className="bg-slate-800 rounded-xl p-4 border border-slate-700 animate-pulse">
+        <div className="h-5 bg-slate-700 rounded w-32 mb-3" />
         <div className="flex gap-2">
-          {[0,1,2,3].map(i => <div key={i} className="flex-1 h-16 bg-slate-700 rounded-lg" />)}
+          {[0,1,2,3].map(i => <div key={i} className="flex-1 h-12 bg-slate-700 rounded-lg" />)}
         </div>
       </div>
     );
@@ -87,13 +87,13 @@ function PhaseIndicator({ roundData }) {
   const { number, phase_index, progress } = roundData;
 
   return (
-    <div className="bg-slate-800 rounded-xl p-6 border border-slate-700">
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-lg font-semibold text-white flex items-center gap-2">
-          <Clock className="w-5 h-5 text-cyan-400" />
+    <div className="bg-slate-800 rounded-xl p-4 border border-slate-700">
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-base font-semibold text-white flex items-center gap-2">
+          <Clock className="w-4 h-4 text-cyan-400" />
           Round {number}
         </h2>
-        <span className="text-sm text-slate-400">Phase {phase_index + 1}/4</span>
+        <span className="text-xs text-slate-400">Phase {phase_index + 1}/4</span>
       </div>
       
       <div className="flex items-center gap-2">
@@ -105,12 +105,12 @@ function PhaseIndicator({ roundData }) {
           return (
             <div key={phase.id} className="flex-1 flex flex-col items-center">
               <div className={`
-                w-12 h-12 rounded-full flex items-center justify-center mb-2 transition-all duration-300
+                w-10 h-10 rounded-full flex items-center justify-center mb-1.5 transition-all duration-300
                 ${isActive ? 'bg-cyan-500 text-white scale-110 shadow-lg shadow-cyan-500/30' : 
                   isComplete ? 'bg-green-500/20 text-green-400' : 
                   'bg-slate-700 text-slate-500'}
               `}>
-                <Icon className="w-5 h-5" />
+                <Icon className="w-4 h-4" />
               </div>
               <span className={`text-xs font-medium ${isActive ? 'text-cyan-400' : 'text-slate-500'}`}>
                 {phase.name}
@@ -120,14 +120,14 @@ function PhaseIndicator({ roundData }) {
         })}
       </div>
       
-      <div className="mt-4 h-1.5 bg-slate-700 rounded-full overflow-hidden">
+      <div className="mt-3 h-1.5 bg-slate-700 rounded-full overflow-hidden">
         <div 
           className="h-full bg-gradient-to-r from-cyan-500 to-blue-500 transition-all duration-300"
           style={{ width: `${((phase_index + progress) / 4) * 100}%` }}
         />
       </div>
       
-      <p className="text-sm text-slate-400 mt-3 text-center">
+      <p className="text-xs text-slate-400 mt-2 text-center">
         {phases[phase_index]?.desc}
       </p>
     </div>
@@ -189,23 +189,31 @@ function ServiceCard({ type, services }) {
   );
 }
 
-function MessageStream({ messages }) {
+function MessagePanel({ messages, onSend, sending }) {
   const streamRef = useRef(null);
+  const [message, setMessage] = useState('');
+  const [bid, setBid] = useState(100);
   
   useEffect(() => {
     if (streamRef.current) {
       streamRef.current.scrollTop = 0;
     }
   }, [messages]);
+
+  const handleSend = () => {
+    if (!message.trim()) return;
+    onSend(message, bid);
+    setMessage('');
+  };
   
   return (
-    <div className="bg-slate-800 rounded-xl border border-slate-700 flex flex-col h-80">
+    <div className="bg-slate-800 rounded-xl border border-slate-700 flex flex-col h-[580px] shadow-[0_0_40px_rgba(6,182,212,0.08)]">
       <div className="p-4 border-b border-slate-700 flex items-center justify-between">
         <h2 className="font-semibold text-white flex items-center gap-2">
           <MessageSquare className="w-5 h-5 text-cyan-400" />
-          Message Stream
+          Messages
         </h2>
-        <span className="text-xs text-slate-400">{messages.length} messages</span>
+        <span className="text-xs text-slate-400">{messages.length} received</span>
       </div>
       
       <div ref={streamRef} className="flex-1 overflow-y-auto p-4 space-y-3">
@@ -231,74 +239,40 @@ function MessageStream({ messages }) {
           ))
         )}
       </div>
-    </div>
-  );
-}
 
-function SendMessage({ onSend, sending }) {
-  const [message, setMessage] = useState('');
-  const [bid, setBid] = useState(100);
-  
-  const handleSend = () => {
-    if (!message.trim()) return;
-    onSend(message, bid);
-    setMessage('');
-  };
-  
-  return (
-    <div className="bg-slate-800 rounded-xl border border-slate-700 p-4">
-      <h2 className="font-semibold text-white flex items-center gap-2 mb-4">
-        <Send className="w-5 h-5 text-cyan-400" />
-        Send Anonymous Message
-      </h2>
-      
-      <div className="space-y-4">
+      <div className="p-3 border-t border-slate-700 space-y-2">
         <textarea
           value={message}
           onChange={(e) => setMessage(e.target.value)}
-          placeholder="Enter your message..."
-          className="w-full h-24 bg-slate-900 border border-slate-700 rounded-lg p-3 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 resize-none"
+          placeholder="Enter your anonymous message..."
+          className="w-full h-24 bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 resize-none"
         />
-        
-        <div className="flex items-center gap-4">
-          <div className="flex-1">
-            <label className="text-xs text-slate-400 mb-1 block">Bid Value</label>
+        <div className="flex items-center gap-3">
+          <div className="flex-1 flex items-center gap-2">
+            <label className="text-xs text-slate-400 whitespace-nowrap">Bid</label>
             <input
               type="range"
               min="1"
               max="1000"
               value={bid}
               onChange={(e) => setBid(parseInt(e.target.value))}
-              className="w-full accent-cyan-500"
+              className="flex-1 accent-cyan-500 h-1.5"
             />
+            <span className="text-sm font-semibold text-white w-10 text-right">{bid}</span>
           </div>
-          <div className="text-right">
-            <span className="text-2xl font-bold text-white">{bid}</span>
-            <span className="text-xs text-slate-400 block">priority</span>
-          </div>
+          <button
+            onClick={handleSend}
+            disabled={!message.trim() || sending}
+            className="px-4 py-2 bg-gradient-to-r from-cyan-500 to-blue-500 text-white text-sm font-medium rounded-lg hover:from-cyan-400 hover:to-blue-400 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center gap-1.5"
+          >
+            {sending ? (
+              <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+            ) : (
+              <Send className="w-3.5 h-3.5" />
+            )}
+            Send
+          </button>
         </div>
-        
-        <button
-          onClick={handleSend}
-          disabled={!message.trim() || sending}
-          className="w-full py-3 bg-gradient-to-r from-cyan-500 to-blue-500 text-white font-semibold rounded-lg hover:from-cyan-400 hover:to-blue-400 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
-        >
-          {sending ? (
-            <>
-              <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-              Submitting...
-            </>
-          ) : (
-            <>
-              <Send className="w-4 h-4" />
-              Send Anonymously
-            </>
-          )}
-        </button>
-        
-        <p className="text-xs text-slate-500 text-center">
-          ⚠️ Demo mode: Message routed through demo client
-        </p>
       </div>
     </div>
   );
@@ -307,37 +281,37 @@ function SendMessage({ onSend, sending }) {
 function ConfigPanel({ config }) {
   if (!config) {
     return (
-      <div className="bg-slate-800 rounded-xl border border-slate-700 p-4 animate-pulse">
-        <div className="h-5 bg-slate-700 rounded w-32 mb-4" />
-        <div className="grid grid-cols-2 gap-3">
-          {[0,1,2,3].map(i => <div key={i} className="h-16 bg-slate-700 rounded-lg" />)}
+      <div className="bg-slate-800 rounded-xl border border-slate-700 p-3 animate-pulse">
+        <div className="h-4 bg-slate-700 rounded w-24 mb-3" />
+        <div className="space-y-2">
+          {[0,1,2,3].map(i => <div key={i} className="h-10 bg-slate-700 rounded-lg" />)}
         </div>
       </div>
     );
   }
 
   return (
-    <div className="bg-slate-800 rounded-xl border border-slate-700 p-4">
-      <h2 className="font-semibold text-white flex items-center gap-2 mb-4">
-        <Activity className="w-5 h-5 text-cyan-400" />
+    <div className="bg-slate-800 rounded-xl border border-slate-700 p-3">
+      <h2 className="font-semibold text-white flex items-center gap-2 mb-3 text-sm">
+        <Activity className="w-4 h-4 text-cyan-400" />
         Protocol Config
       </h2>
-      <div className="grid grid-cols-2 gap-3 text-sm">
-        <div className="bg-slate-900/50 rounded-lg p-3">
+      <div className="space-y-2 text-sm">
+        <div className="bg-slate-900/50 rounded-lg p-2 flex items-center justify-between">
           <span className="text-slate-400 text-xs">Round Duration</span>
-          <p className="text-white font-mono">{config.round_duration}</p>
+          <span className="text-white font-mono text-xs">{config.round_duration}</span>
         </div>
-        <div className="bg-slate-900/50 rounded-lg p-3">
+        <div className="bg-slate-900/50 rounded-lg p-2 flex items-center justify-between">
           <span className="text-slate-400 text-xs">Message Capacity</span>
-          <p className="text-white font-mono">{(config.message_length / 1024).toFixed(0)}KB</p>
+          <span className="text-white font-mono text-xs">{(config.message_length / 1024).toFixed(0)}KB</span>
         </div>
-        <div className="bg-slate-900/50 rounded-lg p-3">
+        <div className="bg-slate-900/50 rounded-lg p-2 flex items-center justify-between">
           <span className="text-slate-400 text-xs">Auction Slots</span>
-          <p className="text-white font-mono">{config.auction_slots}</p>
+          <span className="text-white font-mono text-xs">{config.auction_slots}</span>
         </div>
-        <div className="bg-slate-900/50 rounded-lg p-3">
+        <div className="bg-slate-900/50 rounded-lg p-2 flex items-center justify-between">
           <span className="text-slate-400 text-xs">Min Clients</span>
-          <p className="text-white font-mono">{config.min_clients}</p>
+          <span className="text-white font-mono text-xs">{config.min_clients}</span>
         </div>
       </div>
     </div>
@@ -367,14 +341,52 @@ function ConnectionStatus({ connected, error }) {
   );
 }
 
+// Mock data for design preview when backend is unavailable
+const MOCK_ROUND_DATA = {
+  number: 42,
+  phase_index: 1,
+  progress: 0.6,
+};
+
+const MOCK_SERVICES = {
+  servers: [
+    { public_key: 'srv1_a1b2c3d4e5f6g7h8i9j0', healthy: true, attested: true, is_leader: true },
+    { public_key: 'srv2_k1l2m3n4o5p6q7r8s9t0', healthy: true, attested: true, is_leader: false },
+    { public_key: 'srv3_u1v2w3x4y5z6a7b8c9d0', healthy: false, attested: false, is_leader: false },
+  ],
+  aggregators: [
+    { public_key: 'agg1_e1f2g3h4i5j6k7l8m9n0', healthy: true, attested: true },
+    { public_key: 'agg2_o1p2q3r4s5t6u7v8w9x0', healthy: true, attested: false },
+  ],
+  clients: [
+    { public_key: 'cli1_y1z2a3b4c5d6e7f8g9h0', healthy: true },
+    { public_key: 'cli2_i1j2k3l4m5n6o7p8q9r0', healthy: true },
+    { public_key: 'cli3_s1t2u3v4w5x6y7z8a9b0', healthy: true },
+    { public_key: 'cli4_c1d2e3f4g5h6i7j8k9l0', healthy: false },
+    { public_key: 'cli5_m1n2o3p4q5r6s7t8u9v0', healthy: true },
+  ],
+};
+
+const MOCK_CONFIG = {
+  round_duration: '10s',
+  message_length: 102400,
+  auction_slots: 20,
+  min_clients: 3,
+};
+
 export default function ADCNetDemo() {
   const [messages, setMessages] = useState([]);
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState(null);
 
-  const { data: config, error: configError } = useAPI('/api/config', 30000);
-  const { data: services, error: servicesError } = useAPI('/api/services', 15000);
-  const { data: roundData, error: roundError } = useAPI('/api/round', 1000);
+  const { data: configData, error: configError } = useAPI('/api/config', 30000);
+  const { data: servicesData, error: servicesError } = useAPI('/api/services', 15000);
+  const { data: roundDataApi, error: roundError } = useAPI('/api/round', 1000);
+
+  // Use mock data when backend is unavailable
+  const config = configData || MOCK_CONFIG;
+  const services = servicesData || MOCK_SERVICES;
+  const roundData = roundDataApi || MOCK_ROUND_DATA;
 
   const handleRoundEvent = useCallback((event) => {
     if (event.messages && event.messages.length > 0) {
@@ -470,16 +482,15 @@ export default function ADCNetDemo() {
             <ServiceCard type="clients" services={services?.clients} />
           </div>
           
-          {/* Middle Column - Messages */}
-          <div className="lg:col-span-1">
-            <h2 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-4">Live Output</h2>
-            <MessageStream messages={messages} />
+          {/* Middle Column - Messages & Send */}
+          <div className="space-y-4">
+            <h2 className="text-sm font-semibold text-slate-400 uppercase tracking-wider">Live Output</h2>
+            <MessagePanel messages={messages} onSend={handleSend} sending={sending} />
           </div>
           
-          {/* Right Column - Send & Config */}
+          {/* Right Column - Config */}
           <div className="space-y-4">
-            <h2 className="text-sm font-semibold text-slate-400 uppercase tracking-wider">Participate</h2>
-            <SendMessage onSend={handleSend} sending={sending} />
+            <h2 className="text-sm font-semibold text-slate-400 uppercase tracking-wider">Protocol</h2>
             <ConfigPanel config={config} />
           </div>
         </div>
