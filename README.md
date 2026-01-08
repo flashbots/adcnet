@@ -7,7 +7,7 @@ ADCNet is a Go implementation of an anonymous distributed communication network 
 
 ## Overview
 
-ADCNet enables participants to broadcast messages anonymously. Message content and sender identity remain hidden as long as not all servers collude. The protocol uses an Invertible Bloom Filter (IBF) based auction system for fair and efficient message scheduling.
+ADCNet enables participants to broadcast messages anonymously. Message sender identity remain hidden as long as one server does is honest. The protocol uses an Invertible Bloom Filter (IBF) based auction system for fair and efficient message scheduling.
 
 ## Architecture
 
@@ -39,11 +39,10 @@ Servers collaborate to reconstruct messages:
 ## Key Features
 
 - **XOR-Based Blinding**: Messages blinded with one-time pads from all server shared secrets
-- **All-Server Participation**: Message recovery requires all servers to contribute
+- **Anytrust Server Group**: Anonymity preserved as long as a single server is honest
 - **Finite Field Arithmetic**: 384-bit field for auction IBF operations
 - **IBF-based Scheduling**: Distributed auction mechanism using Invertible Bloom Filters
 - **Dynamic Message Sizing**: Variable-length messages allocated through auction weights
-- **Anonymity Guarantees**: Unlinkability between rounds through fresh blinding
 - **TEE Attestation**: Optional TDX attestation for service verification
 
 ## Getting Started

@@ -3,6 +3,7 @@ package protocol
 import (
 	"crypto/ecdh"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"math/big"
 	"slices"
@@ -43,10 +44,14 @@ func (s *ServerMessager) UnblindPartialMessages(msgs []*ServerPartialDecryptionM
 
 	auctionVector := make([]*big.Int, len(msgs[0].AuctionVector))
 
+	messageVectorLength := len(msgs[0].OriginalAggregate.MessageVector)
 	allServerIdsForRound := msgs[0].OriginalAggregate.AllServerIds
 	for _, msg := range msgs {
 		if !slices.Equal(allServerIdsForRound, msg.OriginalAggregate.AllServerIds) {
 			return nil, fmt.Errorf("mismatching round server ids in decryption messages")
+		}
+		if messageVectorLength != len(msg.MessageVector) {
+			return nil, fmt.Errorf("mismatching message vector lengths in decryption messages")
 		}
 	}
 
@@ -57,7 +62,7 @@ func (s *ServerMessager) UnblindPartialMessages(msgs []*ServerPartialDecryptionM
 		}
 	}
 
-	messageVector := make([]byte, s.Config.MessageLength)
+	messageVector := make([]byte, messageVectorLength)
 	copy(messageVector, msgs[0].OriginalAggregate.MessageVector)
 	for i := range msgs {
 		crypto.XorInplace(messageVector, msgs[i].MessageVector)
@@ -105,7 +110,7 @@ func (s *ServerMessager) UnblindAggregate(currentRound int, aggregate *Aggregate
 			start := i * batchSize
 			end := min(start+batchSize, len(msgSharedSecrets))
 
-			mbvc <- crypto.DeriveXorBlindingVector(msgSharedSecrets[start:end], uint32(currentRound), int32(s.Config.MessageLength))
+			mbvc <- crypto.DeriveXorBlindingVector(msgSharedSecrets[start:end], uint32(currentRound), len(aggregate.MessageVector))
 			abvc <- crypto.DeriveBlindingVector(auctionSharedSecrets[start:end], uint32(currentRound), int32(nAuctionEls), crypto.AuctionFieldOrder)
 		}(i)
 	}
@@ -249,13 +254,18 @@ func (c *ClientMessager) ProcessPreviousAuction(auctionIBF *blind_auction.IBFVec
 	auctionEngine := blind_auction.NewAuctionEngine(uint32(c.Config.MessageLength), 1)
 	winners := auctionEngine.RunAuction(bids)
 
+	totalAllocated := 0
+	for _, winner := range winners {
+		totalAllocated += int(winner.Bid.Size)
+	}
+
 	ourHash := sha256.Sum256(previousRoundMessage)
 	for _, winner := range winners {
 		if winner.Bid.MessageHash == ourHash {
-			return AuctionResult{true, int(winner.SlotIdx)}
+			return AuctionResult{true, int(winner.SlotIdx), totalAllocated}
 		}
 	}
-	return AuctionResult{false, 0}
+	return AuctionResult{false, 0, totalAllocated}
 }
 
 // PrepareMessage creates a blinded message with auction data for the current round.
@@ -264,7 +274,7 @@ func (c *ClientMessager) PrepareMessage(currentRound int, previousRoundOutput *R
 	if previousRoundOutput != nil && previousRoundOutput.RoundNumber+1 == currentRound {
 		previousAuctionResult = c.ProcessPreviousAuction(previousRoundOutput.AuctionVector, previousRoundMessage)
 	} else {
-		previousAuctionResult = AuctionResult{false, 0}
+		return nil, false, errors.New("unknown previous round")
 	}
 
 	auctionIBF := blind_auction.NewIBFVector(c.Config.AuctionSlots)
@@ -272,7 +282,7 @@ func (c *ClientMessager) PrepareMessage(currentRound int, previousRoundOutput *R
 		auctionIBF.InsertChunk(currentRoundAuctionData.EncodeToChunk())
 	}
 	auctionElements := auctionIBF.EncodeAsFieldElements()
-	messageVector := make([]byte, c.Config.MessageLength)
+	messageVector := make([]byte, previousAuctionResult.TotalAllocated)
 	if previousAuctionResult.ShouldSend {
 		copy(messageVector[previousAuctionResult.MessageStartIndex:], previousRoundMessage)
 	}
@@ -307,7 +317,7 @@ func (c *ClientMessager) BlindClientMessage(currentRound int, messageVector []by
 
 	for _, sId := range serverIDs {
 		sharedSecret := c.SharedSecrets[sId]
-		messageBlind := crypto.DeriveXorBlindingVector([]crypto.SharedKey{append([]byte{1}, sharedSecret...)}, uint32(currentRound), int32(c.Config.MessageLength))
+		messageBlind := crypto.DeriveXorBlindingVector([]crypto.SharedKey{append([]byte{1}, sharedSecret...)}, uint32(currentRound), len(messageVector))
 		crypto.XorInplace(blindedMessageVector, messageBlind)
 	}
 

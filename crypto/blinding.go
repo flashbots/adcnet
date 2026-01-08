@@ -54,11 +54,20 @@ func DeriveBlindingVector(sharedSecrets []SharedKey, round uint32, nEls int32, f
 
 // DeriveXorBlindingVector generates XOR blinding bytes from shared secrets.
 // Used for message vector blinding where XOR-based privacy is sufficient.
-func DeriveXorBlindingVector(sharedSecrets []SharedKey, round uint32, nBytes int32) []byte {
-	srcBytesBuf := make([]byte, nBytes)
-	dstBytesBuf := make([]byte, nBytes)
+func DeriveXorBlindingVector(sharedSecrets []SharedKey, round uint32, nBytes int) []byte {
+	if nBytes == 0 {
+		return []byte{}
+	}
+	// round to whole AES block
+	nBlocks := nBytes / aes.BlockSize
+	roundedNBytes := nBlocks * aes.BlockSize
+	if roundedNBytes < nBytes {
+		roundedNBytes += aes.BlockSize
+	}
+	srcBytesBuf := make([]byte, roundedNBytes)
+	dstBytesBuf := make([]byte, roundedNBytes)
 
-	res := make([]byte, nBytes)
+	res := make([]byte, roundedNBytes)
 
 	roundKeyBuf := make([]byte, 4+len(sharedSecrets[0]))
 	binary.BigEndian.PutUint32(roundKeyBuf[:4], round)
@@ -76,5 +85,5 @@ func DeriveXorBlindingVector(sharedSecrets []SharedKey, round uint32, nBytes int
 		XorInplace(res, dstBytesBuf)
 	}
 
-	return res
+	return res[:nBytes]
 }
