@@ -35,11 +35,11 @@ sequenceDiagram
 
     rect rgb(240, 255, 240)
         Note right of S: Unblind
-        S->>S: Derive unblinding vectors for each client
-        S->>L: Aggregated unblinding vectors (decryption shares)
+        S->>S: Derive unblinding vectors<br/>for each client
+        S->>L: Aggregated unblinding vectors<br/>(decryption shares)
     end
 
-    L->>L: Combine all unblinding vectors and reveal message and auction vectors
+    L->>L: Combine all unblinding vectors<br/>and reveal message and schedule vectors
     L-->>C: Broadcast: messages + schedule 
 
     Note over C,L: Clients check if they are allocated slots in round N+1
@@ -59,13 +59,16 @@ Both the scheduling and the message vectors are encrypted in a simple n-of-n sch
 To blind a byte vector:
 * each Client derives a vector of desired size from each of the shared secrets, and XOR-s all of those into one blinding vector
 * the blinding vector is the XOR-ed with the plaintext vector, resulting in an encrypted ("blinded") vector  
+
 Aggregators XOR all the blinded vectors they receive without the ability to unblind any of the data, which makes it impossible to subsequently unblind any specific user which is where the anonymity guarantee originates.  
+
 To unblind a byte vector:
-* each Server (upon receiving an aggregated message which contains information about which Clients have added their blinding vectors) derives an unblinding vector for each of the Client present in the aggregated message
+* each Server, upon receiving an aggregated message which contains information about which Clients have added their blinding vectors, derives an unblinding vector for each of the Client present in the aggregated message
 * each server XOR-s all of the derived per-client unblinding vectors into one aggregate unblinding vector. Note that this is not enough to unblind the message, as Clients encrypt to all Servers, and one Server decrypts all Clients for that given Server
 * each Server forwards their aggregated unblinding vector (decryption share) to the leader (one of the Servers)
 * the leader then XOR-s all of the aggregated unblinding vectors into the final unblinding vector
 * the combined unblinding vector is subsequently XOR-ed with the blinded ciphertext vector, revealing the aggregated plaintext content.  
+
 Note that only the aggregate message is revealed, and it's not possible to unblind any message from a specific Client (deanonymizing them) without all Servers maliciously colluding.  
 
 Because of the use of XOR, encryption is very fast, but has the major downside of requiring all Servers to be online. If any Server is offline or does not reveal their unblinding pad, the messages cannot be recovered.  
@@ -94,6 +97,54 @@ What we propose instead is for the scheduling to be auction-based, with bids ref
 We realize the auction-based scheduling through an **Invertible Bloom Filter (IBF)** which we encode as a vector of finite field elements, allowing us to blind and aggregate the structure for use in the protocol preserving anonymity properties. Other than using a different data structure and finite field cryptography over XOR the scheduling protocol looks almost the same as the fingerprint scheduling in ZIPNet.  
 
 Clients put their bids (message hash, number of bytes, and utility) into the IBF, encode it as field elements vector, blind it using a pseudorandom vector of field elements derived from pairwise-shared secrets with all the Servers, and send the blinded vector to Aggregators. Each Aggregator adds all of the blinded scheduling vectors (addition in the field) and send the resulting vector to Servers for unblinding. Once the Servers collectively unblind the scheduling vector, each Client recovers the bids from the resulting unblinded IBF and runs a **knapsack solver** to determine winners of the auction ("talking clients"). Because the Clients are anyway running in TEEs we are not concerned with dishonest behavior, just like with fingerprint scheduling in ZIPNet. Since the result of the auction determines how many bytes should be allocated to the message vector, the message vector's size can by variable to save on unused message vector bandwidth, which is not possible with fingerprint scheduling.  
+
+**Auction-based scheduling reference diagram**
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Clients
+    participant A as Aggregators
+    participant S as Servers
+    participant L as Leader
+
+    note over C: Round N: Auction for Round N+1 slots
+
+    rect rgb(240, 248, 255)
+        note right of C: Bid Preparation
+        C->>C: Create bid (msg_hash, size, weight)
+        C->>C: Insert into IBF structure
+        C->>C: Encode as field elements
+        C->>C: Add blinding: ibf + Σ server_pads
+    end
+
+    C->>A: Blinded auction vector
+
+    rect rgb(255, 248, 240)
+        note right of A: Aggregation
+        A->>A: Field addition: Σ client_vectors
+    end
+
+    A->>S: Aggregated vector + client list
+
+    rect rgb(240, 255, 240)
+        note right of S: Unblinding
+        S->>S: Compute pad contribution
+        S->>L: Partial unblinding share
+        L->>L: Subtract all shares
+        L->>L: Recover IBF (peeling)
+    end
+
+    L-->>C: Broadcast: all recovered bids
+
+    rect rgb(240, 240, 255)
+        note right of C: Local Resolution
+        C->>C: Run knapsack solver
+        C->>C: Sort winners by msg_hash
+        C->>C: Compute own slot offset (if won)
+    end
+
+    note over C: Round N+1: Place message at won slot
+```
 
 The auction-based scheduling is less performant than the fingerprint-based scheduling because of the use of finite field addition over the much faster XOR. However, for some use cases the scheduling overhead is justified thanks to the optimal allocation of the much bigger message vector.  
 
