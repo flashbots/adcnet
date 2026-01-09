@@ -13,7 +13,7 @@ For an overview of the protocol, see [protocol/protocol.md](protocol/protocol.md
 
 ## Overview
 
-ADCNet enables participants to broadcast messages anonymously. Message sender identity remains hidden as long as one server is honest. The protocol uses an Invertible Bloom Filter (IBF) based auction system for fair and efficient message scheduling.
+ADCNet enables participants to broadcast messages anonymously. Message sender identity remains hidden as long as one server is honest. The protocol uses an Invertible Bloom Filter (IBF) based auction system for fair and efficient message scheduling.  
 
 ## Architecture
 
