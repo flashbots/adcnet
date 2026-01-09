@@ -3,7 +3,9 @@
 [![Goreport status](https://goreportcard.com/badge/github.com/flashbots/adcnet)](https://goreportcard.com/report/github.com/flashbots/adcnet)
 [![Test status](https://github.com/flashbots/adcnet/workflows/Checks/badge.svg?branch=main)](https://github.com/flashbots/adcnet/actions?query=workflow%3A%22Checks%22)
 
-ADCNet is a proof of concept Go implementation of an anonymous distributed communication network using XOR-based message blinding and auction-based message scheduling. It provides anonymous broadcast requiring all servers to participate in message recovery.
+ADCNet is a proof of concept Go implementation of an anonymous distributed communication network using XOR-based message blinding and auction-based message scheduling. It provides anonymous broadcast requiring all servers to participate in message recovery.  
+The protocol is mostly based on [ZIPNet: Low-bandwidth anonymous broadcast from (dis)Trusted Execution Environments](https://eprint.iacr.org/2024/1227).  
+For an overview of the protocol, see [protocol/protocol.md](protocol/protocol.md).  
 
 > [!WARNING]
 > This repository is a work in progress. A lot of it is vibe-coded, a lof of the cryptography is hand-rolled. Do not use for any production use cases!
