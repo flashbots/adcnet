@@ -40,3 +40,43 @@ The auction-based scheduling is less performant than the fingerprint-based sched
 
 **TEE Aggregators in ADCNet**  
 Unline in ZIPNet, Aggregators in ADCNet also run in TEEs for now to preserve the integrity of aggregating auction scheduling vectors. This can be realized by cryptograpic schemes, but is more involved and the performance hit is likely to be unwarranted. Like in ZIPNet, TEEs are only relied upon for their integrity, not privacy.  
+
+**Reference diagram**  
+```mermaid
+sequenceDiagram
+    participant C as Clients
+    participant A as Aggregators
+    participant S as Servers
+    participant L as Leader
+
+    Note over C,L: Round N begins
+
+    rect rgb(240, 248, 255)
+        Note right of C: Prepare round N data
+        C->>C: Check round N-1 scheduling auction results
+        C->>C: Place message at won slot (if any)
+        C->>C: Insert round N+1 bid into IBF (if any)
+        C->>C: Blind message (XOR) + auction (field addition)
+    end
+
+    C->>A: Blinded (message, auction) vectors
+
+    rect rgb(255, 248, 240)
+        Note right of A: Aggregate
+        A->>A: XOR message vectors
+        A->>A: Add auction vectors (field)
+    end
+
+    A->>S: Aggregated vectors + client list
+
+    rect rgb(240, 255, 240)
+        Note right of S: Unblind
+        S->>S: Derive unblinding vector for each client
+        S->>L: Aggregate unblinding vectors (decryption shares)
+    end
+
+    L->>L: Combine all unblinding vectors and reveal message and auction vectors
+    L-->>C: Broadcast: messages + auction IBF
+
+    Note over C,L: Clients solve knapsack for round N+1 slots
+```
