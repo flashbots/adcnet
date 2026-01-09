@@ -1,8 +1,10 @@
 # Auction-based DCNet
 
-## ZIPNet
+The ADCNet protocol is heavily inspired by [ZIPNet: Low-bandwidth anonymous broadcast from (dis)Trusted Execution Environments](https://eprint.iacr.org/2024/1227). This document is a brief introduction to ZIPNet and a protocol-level description of auction-based scheduling and variable-size messaging that improves ZIPNet's scheduling for use cases where optimal utility-based allocation of bandwidth is needed.
 
-[ZIPNet: Low-bandwidth anonymous broadcast from (dis)Trusted Execution Environments](https://eprint.iacr.org/2024/1227), as most DC nets, is run by a set of Clients and Servers. Clients attempt to send messages anonymously ("talking") and in addition provide "cover traffic", network traffic that hides where the actual messages originate. The set of "talking" Clients and Clients sending "cover traffic" makes up the anonymity set — the aim is for any realistic adversary to not be able to distinguish the actual origin of any message better than chance within the anonymity set. Clients encrypt ("blind") their messages to some set of Servers, which then collaboratively decrypt ("unblind") the messages, revealing the content. ZIPNet in addition introduces Aggregators, a middle layer that lessens network bandwidth requirements for Servers by aggregating large subsets of Client messages into a single message which is forwarded to the Servers.  
+### ZIPNet overview
+
+ZIPNet, as most DC nets, is run by a set of Clients and Servers. Clients attempt to send messages anonymously ("talking") and in addition provide "cover traffic", network traffic that hides where the actual messages originate. The set of "talking" Clients and Clients sending "cover traffic" makes up the anonymity set — the aim is for any realistic adversary to not be able to distinguish the actual origin of any message better than chance within the anonymity set. Clients encrypt ("blind") their messages to some set of Servers, which then collaboratively decrypt ("unblind") the messages, revealing the content. ZIPNet in addition introduces Aggregators, a middle layer that lessens network bandwidth requirements for Servers by aggregating large subsets of Client messages into a single message which is forwarded to the Servers.  
 
 The protocol consists of two rounds: scheduling and messaging. For simplicity the scheduling is piggy-backing on messaging, which results in a single round consisting of a single message containing both the message for the current round, and the scheduling for the upcoming round.  
 
@@ -46,7 +48,7 @@ sequenceDiagram
     Note over C,L: Clients check if they are allocated slots in round N+1
 ```
 
-## ZIPNet protocol key details
+### ZIPNet protocol key details
 
 **Scheduling in ZIPNet**  
 As in other DCNet constructions, Clients can only send messages in preallocated slots. In ZIPNet, which this protocol is mostly based, scheduling is done by inserting a message fingerprints into a (large) scheduling bitvector. Each Client which wants to "talk" inserts their fingerprint at a pseudorandom location derived from their identity, blinds the scheduling vector with pairwise-shared secrets exchanged previously with Servers, and sends the resulting blinded vector to an Aggregator. Aggregators XOR all the scheduling vectors and forward the result to Servers for unblinding. When the scheduling vector is revealed, Clients check if their fingerprint appears unmodified in the revealed aggregate scheduling vector, if so they know they will not have conflicts with any other Clients and they map the position in the scheduling vector to a position in the message vector for the upcoming round.  
@@ -89,7 +91,7 @@ TEEs and their integrity property is also used in ZIPNet for limiting the number
 **Cover traffic**  
 Non-talking Clients participate in the protocol by sending just their blinding vectors, which are simply encrypted zero-vectors. When the cover traffic is aggregated with actual data, they don't actually change any of the data — they simply XOR-in the blinding vectors, which are subsequently removed by Servers as part of unblinding. Cover traffic is crucial for anonymity, as it's what actually constructs the anonymity set.  
 
-# Auction-based scheduling, variable-size messages
+# ADCNet: ZIPNet with auction-based scheduling and variable-size messages
 
 Notice that fingerprint-based scheduling proposed in ZIPNet effectively schedules Clients at random. While this does work for some use cases, it is far from optimal for others! What's more, Clients are limited to static, predefined size messages, which again works well in some cases and does not in other cases. One case in which random, static-size scheduling does not work well is sending blockchain transactions anonymously: they are neither created equal nor are they anywhere close to similar or static in size, and the transaction has to be transmitted atomically.  
 
