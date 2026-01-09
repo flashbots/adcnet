@@ -9,6 +9,7 @@ The protocol consists of two rounds: scheduling and messaging. For simplicity th
 **Reference diagram**  
 ```mermaid
 sequenceDiagram
+    autonumber
     participant C as Clients
     participant A as Aggregators
     participant S as Servers
