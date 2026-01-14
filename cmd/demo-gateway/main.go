@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -30,6 +32,7 @@ func main() {
 		staticDir        = flag.String("static", "", "Directory for static files")
 		skipVerification = flag.Bool("skip-verification", false, "Skip attestation verification")
 		measurementsURL  = flag.String("measurements-url", "", "URL for allowed TEE measurements")
+		allowedOrigins   = flag.String("allowed-origins", "http://localhost:*", "Comma-separated list of allowed CORS origins (use * for all)")
 	)
 	flag.Parse()
 
@@ -43,11 +46,18 @@ func main() {
 		cancel()
 	}()
 
+	// Parse allowed origins
+	origins := strings.Split(*allowedOrigins, ",")
+	for i := range origins {
+		origins[i] = strings.TrimSpace(origins[i])
+	}
+
 	gateway := NewGateway(&GatewayConfig{
 		RegistryURL:      *registryURL,
 		SkipVerification: *skipVerification,
 		MeasurementsURL:  *measurementsURL,
 		StaticDir:        *staticDir,
+		AllowedOrigins:   origins,
 	})
 
 	go gateway.Start(ctx)
@@ -57,7 +67,7 @@ func main() {
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Timeout(30 * time.Second))
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{"*"},
+		AllowedOrigins:   gateway.config.AllowedOrigins,
 		AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Content-Type"},
 		AllowCredentials: false,
@@ -96,6 +106,7 @@ type GatewayConfig struct {
 	SkipVerification bool
 	MeasurementsURL  string
 	StaticDir        string
+	AllowedOrigins   []string
 }
 
 // Gateway serves the demo API and website.
@@ -143,18 +154,34 @@ func (g *Gateway) RegisterRoutes(r chi.Router) {
 
 func (g *Gateway) registerStaticRoutes(r chi.Router) {
 	if g.config.StaticDir != "" {
-		fileServer := http.FileServer(http.Dir(g.config.StaticDir))
+		// Get absolute path of static directory for security validation
+		absStaticDir, err := filepath.Abs(g.config.StaticDir)
+		if err != nil {
+			fmt.Printf("Warning: could not resolve static dir: %v\n", err)
+			return
+		}
+
+		fileServer := http.FileServer(http.Dir(absStaticDir))
 		r.Handle("/*", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-			path := g.config.StaticDir + req.URL.Path
-			if _, err := os.Stat(path); os.IsNotExist(err) && req.URL.Path != "/" {
-				http.ServeFile(w, req, g.config.StaticDir+"/index.html")
+			// Clean and validate the path to prevent directory traversal
+			cleanPath := filepath.Clean(req.URL.Path)
+			fullPath := filepath.Join(absStaticDir, cleanPath)
+
+			// Ensure the resolved path is within the static directory
+			if !strings.HasPrefix(fullPath, absStaticDir) {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+
+			if _, err := os.Stat(fullPath); os.IsNotExist(err) && req.URL.Path != "/" {
+				http.ServeFile(w, req, filepath.Join(absStaticDir, "index.html"))
 				return
 			}
 			fileServer.ServeHTTP(w, req)
 		}))
 	} else {
 		r.Get("/", func(w http.ResponseWriter, req *http.Request) {
-			http.Error(w, "nothing to serve", 500)
+			http.Error(w, "nothing to serve", http.StatusInternalServerError)
 		})
 		r.Get("/favicon.svg", g.handleFavicon)
 	}
