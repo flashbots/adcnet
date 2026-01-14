@@ -97,9 +97,9 @@ Notice that fingerprint-based scheduling proposed in ZIPNet effectively schedule
 
 What we propose instead is for the scheduling to be auction-based, with bids reflecting any utility a protocol might care about (protocol transaction fee, time since last message, maximum geographic diversity). The reasoning for it is that this scheme opens up the design space to basically any programmatic scheduling of messages, and specifically an auction maximizing some utility will by design allocate the (scarce and congested!) message vector slots. Whats more, since bids can contain metadata we can extend scheduling to also consider variable size messages, avoiding a whole number of issues that come with splitting large messages into chunks that make it through at random.  
 
-We realize the auction-based scheduling through an **Invertible Bloom Filter (IBF)** which we encode as a vector of finite field elements, allowing us to blind and aggregate the structure for use in the protocol preserving anonymity properties. Other than using a different data structure and finite field cryptography over XOR the scheduling protocol looks almost the same as the fingerprint scheduling in ZIPNet.  
+We realize the auction-based scheduling through an **Invertible Bloom Lookup Table (IBLT)** which we encode as a vector of finite field elements, allowing us to blind and aggregate the structure for use in the protocol preserving anonymity properties. Other than using a different data structure and finite field cryptography over XOR the scheduling protocol looks almost the same as the fingerprint scheduling in ZIPNet.
 
-Clients put their bids (message hash, number of bytes, and utility) into the IBF, encode it as field elements vector, blind it using a pseudorandom vector of field elements derived from pairwise-shared secrets with all the Servers, and send the blinded vector to Aggregators. Each Aggregator adds all of the blinded scheduling vectors (addition in the field) and send the resulting vector to Servers for unblinding. Once the Servers collectively unblind the scheduling vector, each Client recovers the bids from the resulting unblinded IBF and runs a **knapsack solver** to determine winners of the auction ("talking clients"). Because the Clients are anyway running in TEEs we are not concerned with dishonest behavior, just like with fingerprint scheduling in ZIPNet. Since the result of the auction determines how many bytes should be allocated to the message vector, the message vector's size can by variable to save on unused message vector bandwidth, which is not possible with fingerprint scheduling.  
+Clients put their bids (message hash, number of bytes, and utility) into the IBLT, encode it as field elements vector, blind it using a pseudorandom vector of field elements derived from pairwise-shared secrets with all the Servers, and send the blinded vector to Aggregators. Each Aggregator adds all of the blinded scheduling vectors (addition in the field) and send the resulting vector to Servers for unblinding. Once the Servers collectively unblind the scheduling vector, each Client recovers the bids from the resulting unblinded IBLT and runs a **knapsack solver** to determine winners of the auction ("talking clients"). Because the Clients are anyway running in TEEs we are not concerned with dishonest behavior, just like with fingerprint scheduling in ZIPNet. Since the result of the auction determines how many bytes should be allocated to the message vector, the message vector's size can by variable to save on unused message vector bandwidth, which is not possible with fingerprint scheduling.
 
 **Auction-based scheduling reference diagram**
 ```mermaid
@@ -115,9 +115,9 @@ sequenceDiagram
     rect rgb(240, 248, 255)
         note right of C: Bid Preparation
         C->>C: Create bid (msg_hash, size, weight)
-        C->>C: Insert into IBF structure
+        C->>C: Insert into IBLT structure
         C->>C: Encode as field elements
-        C->>C: Add blinding: ibf + Σ server_pads
+        C->>C: Add blinding: iblt + Σ server_pads
     end
 
     C->>A: Blinded auction vector
@@ -134,7 +134,7 @@ sequenceDiagram
         S->>S: Compute pad contribution
         S->>L: Partial unblinding share
         L->>L: Subtract all shares
-        L->>L: Recover IBF (peeling)
+        L->>L: Recover IBLT (peeling)
     end
 
     L-->>C: Broadcast: all recovered bids

@@ -13,7 +13,7 @@ For an overview of the protocol, see [protocol/protocol.md](protocol/protocol.md
 
 ## Overview
 
-ADCNet enables participants to broadcast messages anonymously. Message sender identity remains hidden as long as one server is honest. The protocol uses an Invertible Bloom Filter (IBF) based auction system for fair and efficient message scheduling.  
+ADCNet enables participants to broadcast messages anonymously. Message sender identity remains hidden as long as one server is honest. The protocol uses an Invertible Bloom Lookup Table (IBLT) based auction system for fair and efficient message scheduling.  
 
 ## Architecture
 
@@ -23,7 +23,7 @@ ADCNet consists of three main components operating in a round-based protocol:
 
 Clients prepare messages for anonymous broadcast by:
 - XOR-blinding messages with one-time pads derived from shared secrets with all servers
-- Participating in auctions for message slots by encoding bids into IBF chunks
+- Participating in auctions for message slots by encoding bids into IBLT chunks
 - Encoding messages at auction-determined offsets if they won slots in previous rounds
 
 ### 2. Aggregators
@@ -40,14 +40,14 @@ Servers collaborate to reconstruct messages:
 - Each server removes its XOR blinding factors from aggregated messages
 - All servers must contribute their blinding vectors
 - Combined unblinding recovers the original message vector
-- The reconstructed IBF is inverted to determine next round's message scheduling
+- The reconstructed IBLT is inverted to determine next round's message scheduling
 
 ## Key Features
 
 - **XOR-Based Blinding**: Messages blinded with one-time pads from all server shared secrets
 - **Anytrust Server Group**: Anonymity preserved as long as a single server is honest
-- **Finite Field Arithmetic**: 384-bit field for auction IBF operations
-- **IBF-based Scheduling**: Distributed auction mechanism using Invertible Bloom Filters
+- **Finite Field Arithmetic**: 384-bit field for auction IBLT operations
+- **IBLT-based Scheduling**: Distributed auction mechanism using Invertible Bloom Lookup Tables
 - **Dynamic Message Sizing**: Variable-length messages allocated through auction weights
 - **TEE Attestation**: Optional TDX attestation for service verification
 
@@ -276,7 +276,7 @@ Main protocol implementation including:
 
 ### `blind_auction`
 Distributed auction mechanism featuring:
-- `IBFVector`: Multi-level Invertible Bloom Filter implementation
+- `IBLTVector`: Multi-level Invertible Bloom Lookup Table implementation
 - `AuctionEngine`: Knapsack-based slot allocation
 
 ### `crypto`
@@ -309,10 +309,10 @@ Standalone CLI commands:
 
 ## Implementation Details
 
-- **Field Order**: 384-bit prime field (48-byte IBF chunks)
+- **Field Order**: 384-bit prime field (48-byte IBLT chunks)
 - **Message Blinding**: XOR with PRF-derived one-time pads unique per server/round
 - **Auction Blinding**: Field addition with server-specific blinding vectors
-- **IBF Structure**: 4-level filter with 0.75 shrink factor between levels
+- **IBLT Structure**: 4-level filter with 0.75 shrink factor between levels
 - **Signatures**: Ed25519 for all protocol messages
 - **Key Exchange**: ECDH P-256 for shared secret derivation
 

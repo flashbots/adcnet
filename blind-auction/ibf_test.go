@@ -9,24 +9,24 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestIBFVectorRecovery(t *testing.T) {
-	// Create a new IBF with 100 message slots
-	ibf := NewIBFVector(100)
+func TestIBLTVectorRecovery(t *testing.T) {
+	// Create a new IBLT with 100 message slots
+	iblt := NewIBLTVector(100)
 
 	// Generate a few random chunks to insert
-	chunks := make([][IBFChunkSize]byte, 20)
+	chunks := make([][IBLTChunkSize]byte, 20)
 	for i := range chunks {
 		rand.Read(chunks[i][:])
 	}
 
-	// Insert chunks into the IBF
+	// Insert chunks into the IBLT
 	for _, chunk := range chunks {
-		ibf.InsertChunk(chunk)
+		iblt.InsertChunk(chunk)
 	}
 
-	// Recover chunks from the IBF
-	recovered, err := ibf.Recover()
-	require.NoError(t, err, ibf)
+	// Recover chunks from the IBLT
+	recovered, err := iblt.Recover()
+	require.NoError(t, err, iblt)
 
 	// Verify all chunks were recovered
 	if len(recovered) != len(chunks) {
@@ -48,50 +48,50 @@ func TestIBFVectorRecovery(t *testing.T) {
 	}
 }
 
-func TestIBFUnion(t *testing.T) {
-	// Create two new IBFs
-	ibf1 := NewIBFVector(14)
-	ibf2 := NewIBFVector(14)
+func TestIBLTUnion(t *testing.T) {
+	// Create two new IBLTs
+	iblt1 := NewIBLTVector(14)
+	iblt2 := NewIBLTVector(14)
 
-	// Generate random chunks for each IBF
-	chunks1 := make([][IBFChunkSize]byte, IBFNChunks)
-	chunks2 := make([][IBFChunkSize]byte, IBFNChunks)
+	// Generate random chunks for each IBLT
+	chunks1 := make([][IBLTChunkSize]byte, IBLTNChunks)
+	chunks2 := make([][IBLTChunkSize]byte, IBLTNChunks)
 
 	for i := range chunks1 {
 		rand.Read(chunks1[i][:])
 		rand.Read(chunks2[i][:])
 	}
 
-	// Insert chunks into the IBFs
+	// Insert chunks into the IBLTs
 	for _, chunk := range chunks1 {
-		ibf1.InsertChunk(chunk)
+		iblt1.InsertChunk(chunk)
 	}
 
 	for _, chunk := range chunks2 {
-		ibf2.InsertChunk(chunk)
+		iblt2.InsertChunk(chunk)
 	}
 
-	ibf1els := ibf1.EncodeAsFieldElements()
-	ibf2els := ibf2.EncodeAsFieldElements()
+	iblt1els := iblt1.EncodeAsFieldElements()
+	iblt2els := iblt2.EncodeAsFieldElements()
 
-	// Combine the IBFs
-	combined := ibf1els
-	for i := range ibf2els {
-		crypto.FieldAddInplace(combined[i], ibf2els[i], crypto.AuctionFieldOrder)
+	// Combine the IBLTs
+	combined := iblt1els
+	for i := range iblt2els {
+		crypto.FieldAddInplace(combined[i], iblt2els[i], crypto.AuctionFieldOrder)
 	}
 
-	// Recover chunks from the combined IBF
-	combinedIbf := NewIBFVector(14).DecodeFromElements(combined)
+	// Recover chunks from the combined IBLT
+	combinedIblt := NewIBLTVector(14).DecodeFromElements(combined)
 
-	recovered, err := combinedIbf.Recover()
-	require.NoError(t, err, "%s, %s, %s", ibf1.String(), ibf2.String(), combinedIbf.String())
+	recovered, err := combinedIblt.Recover()
+	require.NoError(t, err, "%s, %s, %s", iblt1.String(), iblt2.String(), combinedIblt.String())
 
 	// The total number of unique chunks is chunks1 + chunks2
 	allChunks := append(chunks1[:], chunks2[:]...)
 
 	// Verify all chunks were recovered
 	if len(recovered) != len(allChunks) {
-		t.Errorf("Expected to recover %d chunks from combined IBF, but got %d", len(allChunks), len(recovered))
+		t.Errorf("Expected to recover %d chunks from combined IBLT, but got %d", len(allChunks), len(recovered))
 	}
 
 	// Check if all original chunks are in the recovered set
@@ -104,7 +104,7 @@ func TestIBFUnion(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Errorf("Failed to recover chunk from combined IBF: %v", originalChunk)
+			t.Errorf("Failed to recover chunk from combined IBLT: %v", originalChunk)
 		}
 	}
 }

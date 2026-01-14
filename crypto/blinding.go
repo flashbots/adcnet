@@ -9,7 +9,7 @@ import (
 )
 
 // DeriveBlindingVector generates field element blinding factors from shared secrets.
-// Used for auction IBF blinding where field arithmetic is required.
+// Used for auction IBLT blinding where field arithmetic is required.
 func DeriveBlindingVector(sharedSecrets []SharedKey, round uint32, nEls int32, fieldOrder *big.Int) []*big.Int {
 	bytesPerElement := (fieldOrder.BitLen() + 7) / 8
 	bytesTotal := int(nEls) * bytesPerElement

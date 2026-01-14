@@ -76,7 +76,7 @@ func TestServices(t *testing.T) {
 
 	client.ProcessRoundBroadcast(&RoundBroadcast{
 		RoundNumber:   1,
-		AuctionVector: blind_auction.NewIBFVector(config.AuctionSlots),
+		AuctionVector: blind_auction.NewIBLTVector(config.AuctionSlots),
 		MessageVector: []byte{},
 	})
 

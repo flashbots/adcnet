@@ -70,7 +70,7 @@ func (s *ServerMessager) UnblindPartialMessages(msgs []*ServerPartialDecryptionM
 
 	unblindedMessage := RoundBroadcast{
 		RoundNumber:   msgs[0].OriginalAggregate.RoundNumber,
-		AuctionVector: blind_auction.NewIBFVector(s.Config.AuctionSlots).DecodeFromElements(auctionVector),
+		AuctionVector: blind_auction.NewIBLTVector(s.Config.AuctionSlots).DecodeFromElements(auctionVector),
 		MessageVector: messageVector,
 	}
 
@@ -240,8 +240,8 @@ func ClientSetup(config *ADCNetConfig, serverPubkeys map[ServerID]*ecdh.PublicKe
 }
 
 // ProcessPreviousAuction determines if this client won a slot in the auction.
-func (c *ClientMessager) ProcessPreviousAuction(auctionIBF *blind_auction.IBFVector, previousRoundMessage []byte) AuctionResult {
-	chunks, err := auctionIBF.Recover()
+func (c *ClientMessager) ProcessPreviousAuction(auctionIBLT *blind_auction.IBLTVector, previousRoundMessage []byte) AuctionResult {
+	chunks, err := auctionIBLT.Recover()
 	if err != nil {
 		return AuctionResult{}
 	}
@@ -277,11 +277,11 @@ func (c *ClientMessager) PrepareMessage(currentRound int, previousRoundOutput *R
 		return nil, false, errors.New("unknown previous round")
 	}
 
-	auctionIBF := blind_auction.NewIBFVector(c.Config.AuctionSlots)
+	auctionIBLT := blind_auction.NewIBLTVector(c.Config.AuctionSlots)
 	if currentRoundAuctionData != nil {
-		auctionIBF.InsertChunk(currentRoundAuctionData.EncodeToChunk())
+		auctionIBLT.InsertChunk(currentRoundAuctionData.EncodeToChunk())
 	}
-	auctionElements := auctionIBF.EncodeAsFieldElements()
+	auctionElements := auctionIBLT.EncodeAsFieldElements()
 	messageVector := make([]byte, previousAuctionResult.TotalAllocated)
 	if previousAuctionResult.ShouldSend {
 		copy(messageVector[previousAuctionResult.MessageStartIndex:], previousRoundMessage)

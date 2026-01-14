@@ -79,7 +79,7 @@ type ProtocolConfig struct {
 	// MessageLength is the byte length of the message vector.
 	MessageLength int `yaml:"message_length"`
 
-	// AuctionSlots is the number of slots in the IBF for auction data.
+	// AuctionSlots is the number of slots in the IBLT for auction data.
 	AuctionSlots uint32 `yaml:"auction_slots"`
 
 	// MinClients is the minimum number of clients for anonymity.

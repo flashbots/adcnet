@@ -141,7 +141,7 @@ func (s *HTTPServer) handleRoundTransitions(ctx context.Context) {
 				if _, found := s.roundBroadcasts[round.Number]; !found {
 					srb, err := s.finalizeRound(&protocol.RoundBroadcast{
 						RoundNumber:   round.Number,
-						AuctionVector: blind_auction.NewIBFVector(s.config.ADCNetConfig.AuctionSlots),
+						AuctionVector: blind_auction.NewIBLTVector(s.config.ADCNetConfig.AuctionSlots),
 						MessageVector: []byte{},
 					})
 					if err != nil {

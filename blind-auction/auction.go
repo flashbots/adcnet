@@ -15,17 +15,17 @@ type AuctionData struct {
 	Size        uint32
 }
 
-// EncodeToChunk serializes auction data into a 48-byte chunk for IBF insertion.
-func (a *AuctionData) EncodeToChunk() [IBFChunkSize]byte {
-	var res [IBFChunkSize]byte
+// EncodeToChunk serializes auction data into a 48-byte chunk for IBLT insertion.
+func (a *AuctionData) EncodeToChunk() [IBLTChunkSize]byte {
+	var res [IBLTChunkSize]byte
 	binary.BigEndian.PutUint32(res[0:4], a.Weight)
 	binary.BigEndian.PutUint32(res[4:8], a.Size)
 	copy(res[8:40], a.MessageHash[:])
 	return res
 }
 
-// AuctionDataFromChunk deserializes auction data from an IBF chunk.
-func AuctionDataFromChunk(chunk [IBFChunkSize]byte) *AuctionData {
+// AuctionDataFromChunk deserializes auction data from an IBLT chunk.
+func AuctionDataFromChunk(chunk [IBLTChunkSize]byte) *AuctionData {
 	var res AuctionData
 
 	copy(res.MessageHash[:], chunk[8:40])
@@ -52,7 +52,7 @@ type AuctionWinner struct {
 	SlotSize uint32 // Allocated bandwidth in bytes
 }
 
-// AuctionEngine determines winning bids after IBF reconstruction.
+// AuctionEngine determines winning bids after IBLT reconstruction.
 // Uses dynamic programming to solve the knapsack problem for optimal bandwidth allocation.
 type AuctionEngine struct {
 	totalBandwidth uint32

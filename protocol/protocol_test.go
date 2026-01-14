@@ -30,8 +30,8 @@ func TestBlindingClient(t *testing.T) {
 		SharedSecrets: map[ServerID]crypto.SharedKey{1: sharedSecret("c1s1"), 2: sharedSecret("c1s2")},
 	}
 
-	auctionIBF := blind_auction.NewIBFVector(config.AuctionSlots)
-	auctionIBF.InsertChunk((&blind_auction.AuctionData{
+	auctionIBLT := blind_auction.NewIBLTVector(config.AuctionSlots)
+	auctionIBLT.InsertChunk((&blind_auction.AuctionData{
 		MessageHash: [32]byte{},
 		Weight:      10,
 		Size:        8,
@@ -44,7 +44,7 @@ func TestBlindingClient(t *testing.T) {
 	expectedMsg[0] = 0xa
 	require.Equal(t, expectedMsg, msgEls)
 
-	roundMessage, err := c.BlindClientMessage(1, msgEls, auctionIBF.EncodeAsFieldElements())
+	roundMessage, err := c.BlindClientMessage(1, msgEls, auctionIBLT.EncodeAsFieldElements())
 	require.NoError(t, err)
 	require.NotNil(t, roundMessage)
 
@@ -97,7 +97,7 @@ func TestE2E(t *testing.T) {
 
 	previousRoundOutput := &RoundBroadcast{
 		RoundNumber:   1,
-		AuctionVector: blind_auction.NewIBFVector(config.AuctionSlots),
+		AuctionVector: blind_auction.NewIBLTVector(config.AuctionSlots),
 		MessageVector: []byte{},
 	}
 
@@ -198,7 +198,7 @@ func BenchmarkUnblindAggregate(b *testing.B) {
 
 	for _, nClients := range nClientBenches {
 		for _, msgVectorLength := range msgSizeBenches {
-			auctionVector := blind_auction.NewIBFVector(uint32(msgVectorLength)).EncodeAsFieldElements()
+			auctionVector := blind_auction.NewIBLTVector(uint32(msgVectorLength)).EncodeAsFieldElements()
 			b.Run(fmt.Sprintf("Unblind aggregate clients-%d-msg-%d", nClients, msgVectorLength), func(b *testing.B) {
 
 				server := &ServerMessager{
@@ -252,7 +252,7 @@ func BenchmarkUnblindMessages(b *testing.B) {
 	}
 
 	for _, msgVectorLength := range msgSizeBenches {
-		auctionVector := blind_auction.NewIBFVector(uint32(msgVectorLength)).EncodeAsFieldElements()
+		auctionVector := blind_auction.NewIBLTVector(uint32(msgVectorLength)).EncodeAsFieldElements()
 		for _, nServers := range nServerBenches {
 			for _, nClients := range nClientBenches {
 				b.Run(fmt.Sprintf("Unblind partial messages servers-%d-clients-%d-msg-%d", nServers, nClients, msgVectorLength), func(b *testing.B) {

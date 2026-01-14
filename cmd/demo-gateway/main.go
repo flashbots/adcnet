@@ -109,7 +109,7 @@ type Gateway struct {
 	serviceHealth   map[string]bool
 	rounds          map[int]*RoundDetail
 	latestRound     int
-	previousAuction *blind_auction.IBFVector
+	previousAuction *blind_auction.IBLTVector
 
 	subscribersMu sync.RWMutex
 	subscribers   map[chan *RoundEvent]struct{}
@@ -390,7 +390,7 @@ func (g *Gateway) fetchLatestBroadcast(servers []*protocol.Signed[services.Regis
 	return nil
 }
 
-func (g *Gateway) decodeRound(broadcast *protocol.RoundBroadcast, prevAuction *blind_auction.IBFVector, config *protocol.ADCNetConfig) *RoundDetail {
+func (g *Gateway) decodeRound(broadcast *protocol.RoundBroadcast, prevAuction *blind_auction.IBLTVector, config *protocol.ADCNetConfig) *RoundDetail {
 	detail := &RoundDetail{
 		Number:    broadcast.RoundNumber,
 		Timestamp: time.Now().Format(time.RFC3339),
