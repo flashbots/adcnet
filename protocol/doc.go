@@ -5,7 +5,7 @@
 //
 // ADCNet provides anonymous broadcast with the following key features:
 //   - XOR-based blinding for message privacy requiring all servers
-//   - Auction-based scheduling using Invertible Bloom Filters (IBF)
+//   - Auction-based scheduling using Invertible Bloom Lookup Tables (IBLT)
 //
 // # Architecture
 //
@@ -19,7 +19,7 @@
 //
 //  3. Servers: Each server removes its blinding factors from the aggregate.
 //     Messages are recovered by XORing all server contributions.
-//     Auction IBF is recovered using field subtraction.
+//     Auction IBLT is recovered using field subtraction.
 //
 // # Core Protocol Flow
 //
@@ -27,7 +27,7 @@
 //   - Client determines if it won a slot in the previous round's auction
 //   - Encodes message at the auction-determined byte offset if so
 //   - Blinds message with XOR using one-time pads from all server shared secrets
-//   - Blinds auction IBF with field addition using server-specific pads
+//   - Blinds auction IBLT with field addition using server-specific pads
 //
 // 2. Aggregation:
 //   - Aggregators XOR client message vectors together
@@ -42,8 +42,8 @@
 //
 // 4. Reconstruction:
 //   - XOR all server message blindings with aggregate to recover messages
-//   - Subtract all server auction blindings from aggregate to recover IBF
-//   - Decode auction IBF to determine next round's winners
+//   - Subtract all server auction blindings from aggregate to recover IBLT
+//   - Decode auction IBLT to determine next round's winners
 //
 // # Security Properties
 //

@@ -10,40 +10,40 @@ import (
 	"github.com/flashbots/adcnet/crypto"
 )
 
-// IBFNChunks is the number of levels in the multi-level IBF structure.
-// TODO: rename to IBFDepth
-const IBFNChunks int = 4
+// IBLTNChunks is the number of levels in the multi-level IBLT structure.
+// TODO: rename to IBLTDepth
+const IBLTNChunks int = 4
 
-// IBFShrinkFactor is the size reduction factor between IBF levels.
-const IBFShrinkFactor float64 = 0.75
+// IBLTShrinkFactor is the size reduction factor between IBLT levels.
+const IBLTShrinkFactor float64 = 0.75
 
-// IBFChunkSize is the byte size of each IBF element (384 bits).
-const IBFChunkSize uint32 = 48
+// IBLTChunkSize is the byte size of each IBLT element (384 bits).
+const IBLTChunkSize uint32 = 48
 
-// IBFVectorLength calculates the total number of buckets across all IBF levels.
-func IBFVectorLength(nBuckets uint32) int {
+// IBLTVectorLength calculates the total number of buckets across all IBLT levels.
+func IBLTVectorLength(nBuckets uint32) int {
 	n := 0
 	fac := 1.0
-	for i := 0; i < IBFNChunks; i++ {
+	for i := 0; i < IBLTNChunks; i++ {
 		n += int(float64(nBuckets) * fac)
-		fac *= IBFShrinkFactor
+		fac *= IBLTShrinkFactor
 	}
 	return n
 }
 
-// IBFVectorSize calculates the total byte size of an IBF vector.
-func IBFVectorSize(nBuckets uint32) uint32 {
-	return uint32(IBFVectorLength(nBuckets)) * IBFChunkSize
+// IBLTVectorSize calculates the total byte size of an IBLT vector.
+func IBLTVectorSize(nBuckets uint32) uint32 {
+	return uint32(IBLTVectorLength(nBuckets)) * IBLTChunkSize
 }
 
-// IBFVector implements a multi-level Invertible Bloom Filter for auction scheduling.
-type IBFVector struct {
-	Chunks   [IBFNChunks][]big.Int
-	Counters [IBFNChunks][]uint64
+// IBLTVector implements a multi-level Invertible Bloom Lookup Table for auction scheduling.
+type IBLTVector struct {
+	Chunks   [IBLTNChunks][]big.Int
+	Counters [IBLTNChunks][]uint64
 }
 
-// String returns a hex-encoded representation of the IBF state.
-func (v *IBFVector) String() string {
+// String returns a hex-encoded representation of the IBLT state.
+func (v *IBLTVector) String() string {
 	res := ""
 	for level := range v.Chunks {
 		res += fmt.Sprintf("L%d: ", level)
@@ -57,45 +57,45 @@ func (v *IBFVector) String() string {
 	return res
 }
 
-// NewIBFVector creates an IBF sized for the expected number of messages.
-func NewIBFVector(messageSlots uint32) *IBFVector {
-	res := &IBFVector{}
+// NewIBLTVector creates an IBLT sized for the expected number of messages.
+func NewIBLTVector(messageSlots uint32) *IBLTVector {
+	res := &IBLTVector{}
 
 	fac := 1.0
 	for level := range res.Chunks {
 		slotsInLevel := int(float64(messageSlots) * fac)
 		res.Chunks[level] = make([]big.Int, slotsInLevel)
 		res.Counters[level] = make([]uint64, slotsInLevel)
-		fac *= IBFShrinkFactor
+		fac *= IBLTShrinkFactor
 	}
 
 	return res
 }
 
 // ChunkToElement converts a chunk to a field element.
-func ChunkToElement(data [IBFChunkSize]byte) *big.Int {
+func ChunkToElement(data [IBLTChunkSize]byte) *big.Int {
 	return new(big.Int).SetBytes(data[:])
 }
 
 // ElementToChunk converts a field element back to a chunk, preserving leading zeros.
-func ElementToChunk(el *big.Int) [IBFChunkSize]byte {
-	var data [IBFChunkSize]byte
+func ElementToChunk(el *big.Int) [IBLTChunkSize]byte {
+	var data [IBLTChunkSize]byte
 	el.FillBytes(data[:])
 	return data
 }
 
-// InsertChunk adds a chunk to the IBF using field addition.
-func (v *IBFVector) InsertChunk(msg [IBFChunkSize]byte) {
+// InsertChunk adds a chunk to the IBLT using field addition.
+func (v *IBLTVector) InsertChunk(msg [IBLTChunkSize]byte) {
 	msgAsEl := ChunkToElement(msg)
-	for level := 0; level < IBFNChunks; level++ {
+	for level := 0; level < IBLTNChunks; level++ {
 		index := ChunkIndex(msg, level, len(v.Chunks[level]))
 		crypto.FieldAddInplace(&v.Chunks[level][index], msgAsEl, crypto.AuctionFieldOrder)
 		v.Counters[level][index]++
 	}
 }
 
-// EncodeAsFieldElements serializes the IBF as field elements for blinding.
-func (v *IBFVector) EncodeAsFieldElements() []*big.Int {
+// EncodeAsFieldElements serializes the IBLT as field elements for blinding.
+func (v *IBLTVector) EncodeAsFieldElements() []*big.Int {
 	res := []*big.Int{}
 	for level := range v.Chunks {
 		for chunk := range v.Chunks[level] {
@@ -111,8 +111,8 @@ func (v *IBFVector) EncodeAsFieldElements() []*big.Int {
 	return res
 }
 
-// DecodeFromElements reconstructs an IBF from field elements.
-func (v *IBFVector) DecodeFromElements(elements []*big.Int) *IBFVector {
+// DecodeFromElements reconstructs an IBLT from field elements.
+func (v *IBLTVector) DecodeFromElements(elements []*big.Int) *IBLTVector {
 	index := uint32(0)
 	for level := range v.Chunks {
 		for chunk := range v.Chunks[level] {
@@ -131,14 +131,14 @@ func (v *IBFVector) DecodeFromElements(elements []*big.Int) *IBFVector {
 	return v
 }
 
-// ChunkIndex computes the bucket index for a chunk at a specific IBF level.
-func ChunkIndex(chunk [IBFChunkSize]byte, level int, itemsInLevel int) uint64 {
+// ChunkIndex computes the bucket index for a chunk at a specific IBLT level.
+func ChunkIndex(chunk [IBLTChunkSize]byte, level int, itemsInLevel int) uint64 {
 	dataToHash := append([]byte(fmt.Sprintf("%d", level)), chunk[:]...)
 	innerIndexSeed := sha256.Sum256(dataToHash)
 	return uint64(binary.BigEndian.Uint64(innerIndexSeed[0:8])) % uint64(itemsInLevel)
 }
 
-// pureCell represents a cell that can be peeled during IBF recovery.
+// pureCell represents a cell that can be peeled during IBLT recovery.
 type pureCell struct {
 	level int
 	index int
@@ -146,9 +146,9 @@ type pureCell struct {
 
 // Recover extracts auction entries using queue-based peeling algorithm.
 // This is O(n) where n is the number of entries, avoiding the O(n²) restart approach.
-func (v *IBFVector) Recover() ([][IBFChunkSize]byte, error) {
+func (v *IBLTVector) Recover() ([][IBLTChunkSize]byte, error) {
 	// Deep copy to avoid modifying original
-	working := &IBFVector{}
+	working := &IBLTVector{}
 	for level := range v.Chunks {
 		working.Chunks[level] = make([]big.Int, len(v.Chunks[level]))
 		working.Counters[level] = make([]uint64, len(v.Counters[level]))
@@ -158,7 +158,7 @@ func (v *IBFVector) Recover() ([][IBFChunkSize]byte, error) {
 		}
 	}
 
-	recovered := make([][IBFChunkSize]byte, 0)
+	recovered := make([][IBLTChunkSize]byte, 0)
 
 	// Initialize queue with all pure cells (counter == 1)
 	queue := make([]pureCell, 0)
@@ -192,7 +192,7 @@ func (v *IBFVector) Recover() ([][IBFChunkSize]byte, error) {
 			innerIndex := ChunkIndex(chunk, innerLevel, len(working.Chunks[innerLevel]))
 
 			if working.Counters[innerLevel][innerIndex] == 0 {
-				return nil, errors.New("unexpected zero counter while recovering IBF")
+				return nil, errors.New("unexpected zero counter while recovering IBLT")
 			}
 
 			crypto.FieldSubInplace(&working.Chunks[innerLevel][innerIndex], chunkEl, crypto.AuctionFieldOrder)
@@ -208,8 +208,8 @@ func (v *IBFVector) Recover() ([][IBFChunkSize]byte, error) {
 	return recovered, nil
 }
 
-// Bytes serializes the IBF to a byte slice.
-func (v *IBFVector) Bytes() []byte {
+// Bytes serializes the IBLT to a byte slice.
+func (v *IBLTVector) Bytes() []byte {
 	res := binary.BigEndian.AppendUint32([]byte{}, uint32(len(v.Chunks)))
 	res = binary.BigEndian.AppendUint32(res, uint32(len(v.Chunks[0])))
 	for level := range v.Chunks {

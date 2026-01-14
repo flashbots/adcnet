@@ -43,7 +43,7 @@ type OrchestratorConfig struct {
 type RoundOutput struct {
 	RoundNumber   int
 	MessageVector []byte
-	AuctionVector *blind_auction.IBFVector
+	AuctionVector *blind_auction.IBLTVector
 	Timestamp     time.Time
 }
 
@@ -365,7 +365,7 @@ func (o *Orchestrator) monitorRoundOutputs() {
 		case <-o.ctx.Done():
 			return
 		case output := <-o.outputChan:
-			var previousRoundAuction *blind_auction.IBFVector = nil
+			var previousRoundAuction *blind_auction.IBLTVector = nil
 			o.outputMu.Lock()
 			if len(o.roundOutputs) > 0 {
 				previousRoundAuction = o.roundOutputs[len(o.roundOutputs)-1].AuctionVector
@@ -378,7 +378,7 @@ func (o *Orchestrator) monitorRoundOutputs() {
 	}
 }
 
-func (o *Orchestrator) printRoundOutput(previousRoundAuction *blind_auction.IBFVector, output RoundOutput) {
+func (o *Orchestrator) printRoundOutput(previousRoundAuction *blind_auction.IBLTVector, output RoundOutput) {
 	var tout string
 	tout += fmt.Sprintf("=== Round %d ===\n", output.RoundNumber)
 	tout += fmt.Sprintf("Timestamp: %s\n", output.Timestamp.Format(time.RFC3339))

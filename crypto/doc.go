@@ -17,7 +17,7 @@
 //
 // Two blinding mechanisms are provided:
 //   - XOR-based blinding for message vectors (DeriveXorBlindingVector)
-//   - Field arithmetic blinding for auction IBF vectors (DeriveBlindingVector)
+//   - Field arithmetic blinding for auction IBLT vectors (DeriveBlindingVector)
 //
 // # Security Note
 //

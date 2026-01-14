@@ -8,7 +8,7 @@ import (
 
 // ADCNetConfig provides configuration parameters for ADCNet components.
 type ADCNetConfig struct {
-	// AuctionSlots is the number of slots in the IBF for auction data.
+	// AuctionSlots is the number of slots in the IBLT for auction data.
 	AuctionSlots uint32 `json:"auction_slots"`
 
 	// MessageLength is the maximum byte capacity of the message vector.
@@ -25,9 +25,9 @@ type ADCNetConfig struct {
 	RoundsPerWindow uint32 `json:"rounds_per_window"`
 }
 
-// AuctionSlotsForConfig calculates total IBF vector size for the configuration.
+// AuctionSlotsForConfig calculates total IBLT vector size for the configuration.
 func AuctionSlotsForConfig(c *ADCNetConfig) uint32 {
-	return 2 * blind_auction.IBFVectorSize(c.AuctionSlots)
+	return 2 * blind_auction.IBLTVectorSize(c.AuctionSlots)
 }
 
 // AuctionResult indicates whether a client won an auction slot.

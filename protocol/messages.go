@@ -68,7 +68,7 @@ func (s *Signed[T]) Recover() (*T, crypto.PublicKey, error) {
 type ClientRoundMessage struct {
 	RoundNumber   int
 	AllServerIds  []ServerID
-	AuctionVector []*big.Int // Field-blinded auction IBF elements
+	AuctionVector []*big.Int // Field-blinded auction IBLT elements
 	MessageVector []byte     // XOR-blinded message bytes
 }
 
@@ -132,7 +132,7 @@ type ServerPartialDecryptionMessage struct {
 // RoundBroadcast contains the final reconstructed broadcast for a round.
 type RoundBroadcast struct {
 	RoundNumber   int
-	AuctionVector *blind_auction.IBFVector
+	AuctionVector *blind_auction.IBLTVector
 	MessageVector []byte
 }
 
