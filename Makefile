@@ -29,6 +29,15 @@ test:
 test-race:
 	go test -race ./...
 
+FUZZTIME ?= 10s
+
+.PHONY: test-fuzz
+test-fuzz:
+	@for fuzz in $$(grep -r "^func Fuzz" ./crypto/*_test.go | sed 's/.*\(Fuzz[a-zA-Z]*\).*/\1/'); do \
+		echo "Running $$fuzz..."; \
+		go test -fuzz=$$fuzz -fuzztime=$(FUZZTIME) ./crypto || exit 1; \
+	done
+
 .PHONY: lint
 lint:
 	gofmt -d -s .

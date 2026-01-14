@@ -16,6 +16,8 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 )
 
+const maxStoredRounds = 100
+
 // RoundOutputCallback is invoked when a round broadcast is finalized.
 type RoundOutputCallback func(*protocol.RoundBroadcast)
 
@@ -148,6 +150,16 @@ func (s *HTTPServer) handleRoundTransitions(ctx context.Context) {
 						fmt.Println(fmt.Errorf("could not finalize empty round: %w", err))
 					} else {
 						s.roundBroadcasts[round.Number] = srb
+					}
+				}
+
+				// Cleanup old round broadcasts to prevent unbounded memory growth
+				if len(s.roundBroadcasts) > maxStoredRounds {
+					minRound := round.Number - maxStoredRounds
+					for r := range s.roundBroadcasts {
+						if r < minRound {
+							delete(s.roundBroadcasts, r)
+						}
 					}
 				}
 			}

@@ -19,10 +19,10 @@
 //
 //	go run ./cmd/registry --addr=:8080 --admin-token=admin:secret
 //
-// demo: Local orchestrator that runs a complete ADCNet deployment in a single
-// process for testing and development.
+// demo-cli: CLI for interacting with a deployed ADCNet network.
 //
-//	go run ./services/demo --clients=10 --servers=3 --round=5s
+//	go run ./cmd/demo-cli send -r http://localhost:7999 -m "Hello" -b 100
+//	go run ./cmd/demo-cli monitor -r http://localhost:7999 --follow
 //
 // # HTTP Configuration Mode
 //

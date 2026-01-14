@@ -101,16 +101,25 @@ protocol:
 
 ### Running the Demo
 
-The demo orchestrator runs a complete local deployment:
+The local deployment script runs a complete network using multiservice:
 
 ```bash
-go run ./services/demo \
+./deploy_local.sh \
   --clients=10 \
   --aggregators=2 \
   --servers=5 \
   --round=10s \
-  --msg-length=512000 \
-  --admin-token="admin:secret"
+  --msg-length=512000
+```
+
+Use the CLI to interact with the deployed network:
+
+```bash
+# Send a message
+go run ./cmd/demo-cli send -r http://localhost:7999 -m "Hello" -b 100 --skip-verification
+
+# Monitor rounds
+go run ./cmd/demo-cli monitor -r http://localhost:7999 --follow --skip-verification
 ```
 
 ## Running Standalone Services
