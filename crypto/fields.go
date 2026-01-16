@@ -15,7 +15,7 @@ func init() {
 // The result is stored in l and also returned.
 func FieldAddInplace(l *big.Int, r *big.Int, fieldOrder *big.Int) *big.Int {
 	l.Add(l, r)
-	if l.Cmp(fieldOrder) > 0 {
+	if l.Cmp(fieldOrder) >= 0 {
 		l.Sub(l, fieldOrder)
 	}
 
@@ -39,7 +39,7 @@ func FieldAddInplace(l *big.Int, r *big.Int, fieldOrder *big.Int) *big.Int {
 // The result is stored in l and also returned.
 func FieldSubInplace(l *big.Int, r *big.Int, fieldOrder *big.Int) *big.Int {
 	l.Sub(l, r)
-	if l.Cmp(fieldOrder) > 0 {
+	if l.Cmp(fieldOrder) >= 0 {
 		l.Sub(l, fieldOrder)
 	}
 	if l.Sign() < 0 {
