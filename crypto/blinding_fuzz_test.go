@@ -93,8 +93,10 @@ func FuzzDeriveXorBlindingVector(f *testing.F) {
 			t.Errorf("non-deterministic output")
 		}
 
-		// Invariant 3: Different round produces different output
-		if nBytes > 0 && round < ^uint32(0) {
+		// Invariant 3: Different round produces different output (with high probability)
+		// Skip this check for small nBytes since collisions are statistically expected
+		// (e.g., 1/256 chance for nBytes=1)
+		if nBytes >= 16 && round < ^uint32(0) {
 			result3 := DeriveXorBlindingVector(sharedSecrets, round+1, nBytes)
 			if bytes.Equal(result, result3) {
 				t.Errorf("different rounds produced identical output")

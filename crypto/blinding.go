@@ -23,7 +23,7 @@ func DeriveBlindingVector(sharedSecrets []SharedKey, round uint32, nEls int32, f
 	}
 
 	roundKeyBuf := make([]byte, 4+len(sharedSecrets[0]))
-	binary.BigEndian.PutUint32(roundKeyBuf[:4], round)
+	binary.BigEndian.PutUint32(roundKeyBuf, round)
 
 	workingEl := big.NewInt(0)
 	words := make([]big.Word, bytesPerElement*8/bits.UintSize)

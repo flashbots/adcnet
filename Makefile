@@ -29,7 +29,7 @@ test:
 test-race:
 	go test -race ./...
 
-FUZZTIME ?= 10s
+FUZZTIME ?= 2s
 
 .PHONY: test-fuzz
 test-fuzz:

@@ -2,6 +2,7 @@ package crypto
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 )
 
@@ -103,7 +104,8 @@ func FuzzXorInplace(f *testing.F) {
 		}
 
 		// Invariant 3: Self-inverse property: XOR(XOR(a, b), b) = a
-		XorInplace(a, b)
+		// Use bCopy since a and b might share backing array (fuzzer can alias them)
+		XorInplace(a, bCopy)
 		if !bytes.Equal(a, aCopy) {
 			t.Error("XOR is not self-inverse")
 		}
@@ -197,8 +199,8 @@ func FuzzNewPublicKeyFromString(f *testing.F) {
 			return
 		}
 
-		// Invariant: String representation round-trips
-		if pubKey.String() != input {
+		// Invariant: String representation round-trips (case-insensitive, since hex is case-insensitive)
+		if !strings.EqualFold(pubKey.String(), input) {
 			t.Errorf("string round trip failed: got %s, want %s", pubKey.String(), input)
 		}
 
